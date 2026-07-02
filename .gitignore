@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+env/
+
+# Preprocessed images
+*_preprocessed.png
+
+# Uploaded test images
+*.jpeg
+*.jpg
+*.png
+*.bmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+DOCUMENTATION.md

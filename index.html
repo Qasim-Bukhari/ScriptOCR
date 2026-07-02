@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ScriptOCR — NJV Document Automation</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #F4F4F1;
+      --surface: #FFFFFF;
+      --surface2:#F9F9F7;
+      --border:  #E8E8E4;
+      --border2: #E0E0DA;
+      --ink:     #1A1A18;
+      --ink2:    #52525A;
+      --ink3:    #6B6860;
+      --muted:   #AEADA8;
+      --sans:    'Inter', sans-serif;
+      --mono:    'JetBrains Mono', monospace;
+    }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    .header {
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      flex-shrink: 0;
+    }
+
+    .logo {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: -0.3px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .logo-mark {
+      width: 24px;
+      height: 24px;
+      background: var(--ink);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .header-tag {
+      font-size: 10px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    /* ── Workspace ── */
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      height: calc(100vh - 52px);
+      overflow: hidden;
+    }
+
+    /* ── Left Panel ── */
+    .left {
+      background: var(--surface);
+      border-right: 1px solid var(--border2);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    /* ── Drop Zone ── */
+    .drop-zone {
+      flex-shrink: 0;
+      height: 240px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: background 0.15s;
+    }
+
+    .drop-zone:hover, .drop-zone.over { background: #F1F1EE; }
+
+    .drop-zone input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .upload-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      text-align: center;
+      padding: 24px;
+      pointer-events: none;
+    }
+
+    .upload-icon {
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      color: var(--muted);
+      background: var(--surface);
+    }
+
+    .upload-placeholder p {
+      font-size: 12px;
+      color: var(--ink2);
+      line-height: 1.5;
+    }
+
+    .upload-placeholder p strong {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink);
+      margin-bottom: 2px;
+    }
+
+    .upload-placeholder span {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .preview-wrap {
+      display: none;
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    .preview-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      padding: 12px;
+    }
+
+    .remove-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 24px;
+      height: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      color: var(--ink3);
+      border-radius: 50%;
+      font-size: 11px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2;
+      transition: all 0.1s;
+    }
+
+    .remove-btn:hover { background: #FEF2F2; color: #DC2626; border-color: #FECACA; }
+
+    .progress-bar {
+      display: none;
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      height: 2px;
+      background: var(--ink);
+      animation: prog 2s ease-in-out infinite;
+    }
+
+    @keyframes prog {
+      0% { width: 0%; opacity: 0.4; }
+      60% { width: 100%; opacity: 1; }
+      100% { width: 100%; opacity: 0; }
+    }
+
+    /* ── Left Controls ── */
+    .left-controls {
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .fname {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+      display: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .field-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .select-wrap { position: relative; }
+
+    .select-wrap select {
+      width: 100%;
+      padding: 9px 30px 9px 11px;
+      font-family: var(--sans);
+      font-size: 13px;
+      color: var(--ink);
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      appearance: none;
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .select-wrap select:focus { border-color: var(--ink2); }
+
+    .select-wrap::after {
+      content: '▾';
+      position: absolute;
+      right: 11px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 10px;
+      pointer-events: none;
+    }
+
+    .run-btn {
+      width: 100%;
+      height: 40px;
+      background: var(--ink);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity 0.15s;
+    }
+
+    .run-btn:hover:not(:disabled) { opacity: 0.82; }
+    .run-btn:disabled { opacity: 0.32; cursor: not-allowed; }
+
+    .spinner {
+      width: 13px; height: 13px;
+      border: 1.5px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .steps { display: none; flex-direction: column; gap: 5px; }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      transition: color 0.2s;
+    }
+
+    .step-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+
+    .step.on { color: var(--ink2); }
+    .step.ok { color: #16A34A; }
+
+    .err {
+      display: none;
+      font-size: 12px;
+      color: #DC2626;
+      background: #FEF2F2;
+      border: 1px solid #FECACA;
+      border-radius: 6px;
+      padding: 9px 12px;
+      line-height: 1.5;
+    }
+
+    /* ── Right Panel ── */
+    .right {
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .empty {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+      padding: 60px 40px;
+    }
+
+    .empty-icon {
+      width: 48px;
+      height: 48px;
+      border: 1px dashed var(--border2);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      color: var(--muted);
+    }
+
+    .empty h3 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--ink2);
+    }
+
+    .empty p {
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 200px;
+      line-height: 1.6;
+    }
+
+    /* ── Results ── */
+    #results {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .res-header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .res-doctype {
+      font-size: 10px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .res-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .res-title {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--ink);
+    }
+
+    .conf-badge {
+      font-size: 10px;
+      font-weight: 500;
+      padding: 3px 9px;
+      border-radius: 20px;
+    }
+
+    .conf-badge.high { background: #F0FDF4; color: #16A34A; border: 1px solid #BBF7D0; }
+    .conf-badge.medium { background: #FFFBEB; color: #B45309; border: 1px solid #FDE68A; }
+    .conf-badge.low { background: #FEF2F2; color: #DC2626; border: 1px solid #FECACA; }
+
+    .fields-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .field-row {
+      display: flex;
+      align-items: baseline;
+      padding: 11px 24px;
+      border-bottom: 1px solid var(--surface2);
+      transition: background 0.1s;
+    }
+
+    .field-row:hover { background: var(--surface2); }
+    .field-row:last-child { border-bottom: none; }
+
+    .field-key {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      width: 130px;
+      flex-shrink: 0;
+    }
+
+    .field-val {
+      font-size: 13px;
+      color: var(--ink);
+    }
+
+    .field-val.empty {
+      color: var(--muted);
+      font-style: italic;
+      font-size: 12px;
+    }
+
+    /* ── Raw Section ── */
+    .raw-section {
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .raw-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 24px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .raw-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .copy-btn {
+      font-size: 11px;
+      color: var(--ink3);
+      background: none;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 2px 9px;
+      cursor: pointer;
+      font-family: var(--sans);
+      transition: all 0.1s;
+    }
+
+    .copy-btn:hover { border-color: var(--ink2); color: var(--ink); }
+
+    .raw-text {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      line-height: 1.8;
+      color: var(--ink2);
+      padding: 12px 24px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 130px;
+      overflow-y: auto;
+    }
+
+    /* ── Footer ── */
+    .res-footer {
+      padding: 10px 24px;
+      border-top: 1px solid var(--border);
+      background: var(--surface2);
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .foot-btn {
+      flex: 1;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: var(--sans);
+      cursor: pointer;
+      transition: opacity 0.1s;
+    }
+
+    .foot-btn.sec { background: var(--surface); border: 1px solid var(--border2); color: var(--ink3); }
+    .foot-btn.pri { background: var(--ink); border: none; color: #fff; font-weight: 500; }
+    .foot-btn:hover { opacity: 0.8; }
+
+    /* ── Uncertain ── */
+    .uncertain-section {
+      display: none;
+      border-top: 1px solid #FDE68A;
+      background: #FFFBEB;
+      padding: 10px 24px;
+      flex-shrink: 0;
+    }
+
+    .uncertain-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #B45309;
+      margin-bottom: 7px;
+    }
+
+    .uncertain-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .u-pill {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: #B45309;
+      background: #fff;
+      border: 1px solid #FDE68A;
+      padding: 2px 9px;
+      border-radius: 20px;
+    }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+    @media (max-width: 780px) {
+      .workspace { grid-template-columns: 1fr; height: auto; overflow: visible; }
+      .left { height: auto; }
+      .right { height: auto; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="logo">
+    <div class="logo-mark">S</div>
+    ScriptOCR
+  </div>
+  <div class="header-tag">NJV Document Automation</div>
+</header>
+
+<div class="workspace">
+
+  <!-- Left -->
+  <div class="left">
+    <div class="drop-zone" id="dz">
+      <input type="file" id="fi" accept="image/*"/>
+      <div class="upload-placeholder" id="ph">
+        <div class="upload-icon">↑</div>
+        <p><strong>Drop document here or click to upload</strong>Handwritten or printed documents</p>
+        <span>.jpg · .png · .bmp</span>
+      </div>
+      <div class="preview-wrap" id="pv">
+        <button class="remove-btn" onclick="clearFile(event)">✕</button>
+        <img id="pi" src="" alt="preview"/>
+      </div>
+      <div class="progress-bar" id="pb"></div>
+    </div>
+
+    <div class="left-controls">
+      <div class="fname" id="fn"></div>
+      <div>
+        <div class="field-label">Document type</div>
+        <div class="select-wrap">
+          <select id="dt">
+            <option value="store_request">Store Request Form</option>
+            <option value="student_registration">Student Registration Form</option>
+            <option value="procurement_request">Procurement / Inventory Request</option>
+          </select>
+        </div>
+      </div>
+      <button class="run-btn" id="rb" onclick="run()" disabled>
+        <div class="spinner" id="sp"></div>
+        <span id="bt">Extract fields</span>
+      </button>
+      <div class="steps" id="sts">
+        <div class="step" id="s1"><div class="step-dot"></div>Preprocessing image</div>
+        <div class="step" id="s2"><div class="step-dot"></div>Extracting text</div>
+        <div class="step" id="s3"><div class="step-dot"></div>Mapping fields</div>
+      </div>
+      <div class="err" id="er"></div>
+    </div>
+  </div>
+
+  <!-- Right -->
+  <div class="right">
+    <div class="empty" id="em">
+      <div class="empty-icon">⬚</div>
+      <h3>No document yet</h3>
+      <p>Upload a document and extract its fields automatically.</p>
+    </div>
+
+    <div id="results">
+      <div class="res-header">
+        <div class="res-doctype" id="rdoctype"></div>
+        <div class="res-title-row">
+          <div class="res-title">Extracted fields</div>
+          <div class="conf-badge" id="cb"></div>
+        </div>
+      </div>
+
+      <div class="fields-list" id="fl"></div>
+
+      <div class="raw-section">
+        <div class="raw-header">
+          <div class="raw-label">Raw extracted text</div>
+          <button class="copy-btn" id="cpbtn" onclick="doCopy()">Copy</button>
+        </div>
+        <div class="raw-text" id="rt"></div>
+      </div>
+
+      <div class="uncertain-section" id="us">
+        <div class="uncertain-label">Uncertain words</div>
+        <div class="uncertain-pills" id="up"></div>
+      </div>
+
+      <div class="res-footer">
+        <button class="foot-btn sec" onclick="doCopy()">Copy text</button>
+        <button class="foot-btn pri" onclick="clearFile()">New document</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let file = null;
+  const dz  = document.getElementById('dz');
+  const fi  = document.getElementById('fi');
+  const ph  = document.getElementById('ph');
+  const pv  = document.getElementById('pv');
+  const pi  = document.getElementById('pi');
+  const fn  = document.getElementById('fn');
+  const rb  = document.getElementById('rb');
+  const sp  = document.getElementById('sp');
+  const bt  = document.getElementById('bt');
+  const er  = document.getElementById('er');
+  const sts = document.getElementById('sts');
+  const pb  = document.getElementById('pb');
+  const em  = document.getElementById('em');
+  const res = document.getElementById('results');
+
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
+  fi.addEventListener('change', () => { if (fi.files[0]) load(fi.files[0]); });
+
+  function load(f) {
+    file = f;
+    const r = new FileReader();
+    r.onload = e => { pi.src = e.target.result; ph.style.display = 'none'; pv.style.display = 'block'; };
+    r.readAsDataURL(f);
+    fn.textContent = f.name; fn.style.display = 'block';
+    rb.disabled = false; er.style.display = 'none';
+  }
+
+  function clearFile(e) {
+    if (e) e.stopPropagation();
+    file = null; fi.value = '';
+    ph.style.display = 'flex'; pv.style.display = 'none';
+    fn.style.display = 'none'; rb.disabled = true;
+    res.style.display = 'none'; em.style.display = 'flex';
+    er.style.display = 'none'; pb.style.display = 'none';
+    resetSteps();
+  }
+
+  function setStep(n) {
+    ['s1','s2','s3'].forEach((id, i) => {
+      const el = document.getElementById(id);
+      el.className = 'step';
+      if (i < n - 1) el.classList.add('ok');
+      else if (i === n - 1) el.classList.add('on');
+    });
+  }
+
+  function resetSteps() {
+    ['s1','s2','s3'].forEach(id => document.getElementById(id).className = 'step');
+    sts.style.display = 'none';
+  }
+
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+
+  async function run() {
+    if (!file) return;
+    sp.style.display = 'block'; bt.textContent = 'Extracting…';
+    rb.disabled = true; er.style.display = 'none';
+    res.style.display = 'none'; em.style.display = 'none';
+    sts.style.display = 'flex'; pb.style.display = 'block';
+    setStep(1); await wait(500);
+    setStep(2);
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('document_type', document.getElementById('dt').value);
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/ocr/fields', { method: 'POST', body: fd });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Request failed.');
+      setStep(3); await wait(400);
+      render(data); resetSteps(); pb.style.display = 'none';
+    } catch(e) {
+      er.textContent = e.message; er.style.display = 'block';
+      em.style.display = 'flex'; resetSteps(); pb.style.display = 'none';
+    } finally {
+      sp.style.display = 'none'; bt.textContent = 'Extract fields';
+      rb.disabled = false;
+    }
+  }
+
+  function render(data) {
+    const conf = (data.confidence || 'unknown').toLowerCase();
+    const cb = document.getElementById('cb');
+    cb.className = 'conf-badge ' + conf;
+    cb.textContent = conf.charAt(0).toUpperCase() + conf.slice(1) + ' confidence';
+    document.getElementById('rdoctype').textContent = data.document_name || '';
+
+    const fl = document.getElementById('fl');
+    fl.innerHTML = '';
+    Object.entries(data.fields || {}).forEach(([k, v]) => {
+      const empty = !v || v.trim() === '';
+      fl.innerHTML += `<div class="field-row">
+        <div class="field-key">${k.replace(/_/g,' ')}</div>
+        <div class="field-val ${empty?'empty':''}">${empty ? 'Not found' : v}</div>
+      </div>`;
+    });
+
+    document.getElementById('rt').textContent = data.extracted_text || '';
+
+    const uncertain = data.low_confidence_words || [];
+    const us = document.getElementById('us');
+    if (uncertain.length) {
+      document.getElementById('up').innerHTML = uncertain.map(w => `<span class="u-pill">${w}</span>`).join('');
+      us.style.display = 'block';
+    } else { us.style.display = 'none'; }
+
+    res.style.display = 'flex';
+  }
+
+  function doCopy() {
+    navigator.clipboard.writeText(document.getElementById('rt').textContent).then(() => {
+      const b = document.getElementById('cpbtn');
+      b.textContent = 'Copied';
+      setTimeout(() => b.textContent = 'Copy', 1500);
+    });
+  }
+</script>
+</body>
+</html>
