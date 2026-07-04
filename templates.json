@@ -1,0 +1,56 @@
+{
+  "store_request": {
+    "name": "Store Request Form",
+    "fields": {
+      "date": "The date the request was made",
+      "requested_by": "Full name of the person making the request",
+      "department": "Department or section of the requester",
+      "item_name": "Name of the item being requested",
+      "quantity": "Number or amount of items requested",
+      "purpose": "Reason or purpose for the request",
+      "signature": "Signature or signatory name"
+    }
+  },
+  "student_registration": {
+    "name": "Student Registration Form",
+    "fields": {
+      "date": "Date of registration",
+      "student_name": "Full name of the student",
+      "father_name": "Father's full name",
+      "date_of_birth": "Student's date of birth",
+      "class": "Class or grade the student is enrolling in",
+      "section": "Section assigned to the student",
+      "roll_number": "Roll number assigned",
+      "contact_number": "Contact phone number",
+      "address": "Home address of the student"
+    },
+    "export": {
+      "type": "google_sheets",
+      "sheet_id": "1yO_iKntsAWuMdOLjRptGgWCvvBC9nLPkni9cJ2JCFik",
+      "columns": [
+        "date",
+        "student_name",
+        "father_name",
+        "date_of_birth",
+        "class",
+        "section",
+        "roll_number",
+        "contact_number",
+        "address"
+      ]
+    }
+  },
+  "procurement_request": {
+    "name": "Procurement / Inventory Request Form",
+    "fields": {
+      "date": "Date of the request",
+      "requested_by": "Name of the person requesting",
+      "department": "Department making the request",
+      "item_name": "Name of the item or equipment",
+      "quantity": "Quantity required",
+      "estimated_cost": "Estimated cost if mentioned",
+      "purpose": "Purpose or justification for procurement",
+      "approved_by": "Name of approving authority if mentioned"
+    }
+  }
+}

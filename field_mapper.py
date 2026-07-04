@@ -1,7 +1,10 @@
 """
-Handwriting OCR — Phase 3
+Handwriting OCR — Phase 3 (refactored on top of the Phase 7 template store)
 Field Mapper
+
 Extracts structured fields from raw OCR text based on document type.
+Document schemas now live in templates.json — see templates.py.
+
 Usage: python field_mapper.py
 """
 
@@ -9,62 +12,22 @@ import os
 import json
 from openai import OpenAI
 
+from templates import get_template, TEMPLATES, TemplateNotFoundError
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_ENDPOINT = "https://models.inference.ai.azure.com"
-MODEL           = "gpt-4o"
+MODEL = "gpt-4o"
 
-# ── Document Schemas ───────────────────────────────────────────────────────────
-
-DOCUMENT_SCHEMAS = {
-    "store_request": {
-        "name": "Store Request Form",
-        "fields": {
-            "date": "The date the request was made",
-            "requested_by": "Full name of the person making the request",
-            "department": "Department or section of the requester",
-            "item_name": "Name of the item being requested",
-            "quantity": "Number or amount of items requested",
-            "purpose": "Reason or purpose for the request",
-            "signature": "Signature or signatory name"
-        }
-    },
-    "student_registration": {
-        "name": "Student Registration Form",
-        "fields": {
-            "date": "Date of registration",
-            "student_name": "Full name of the student",
-            "father_name": "Father's full name",
-            "date_of_birth": "Student's date of birth",
-            "class": "Class or grade the student is enrolling in",
-            "section": "Section assigned to the student",
-            "roll_number": "Roll number assigned",
-            "contact_number": "Contact phone number",
-            "address": "Home address of the student"
-        }
-    },
-    "procurement_request": {
-        "name": "Procurement / Inventory Request Form",
-        "fields": {
-            "date": "Date of the request",
-            "requested_by": "Name of the person requesting",
-            "department": "Department making the request",
-            "item_name": "Name of the item or equipment",
-            "quantity": "Quantity required",
-            "estimated_cost": "Estimated cost if mentioned",
-            "purpose": "Purpose or justification for procurement",
-            "approved_by": "Name of approving authority if mentioned"
-        }
-    }
-}
+# Backward-compatible alias. The source of truth is now templates.json,
+# but anything that still imports DOCUMENT_SCHEMAS from here keeps working.
+DOCUMENT_SCHEMAS = TEMPLATES
 
 
 # ── Field Mapper ───────────────────────────────────────────────────────────────
-
 def build_prompt(document_type: str, extracted_text: str) -> str:
-    schema = DOCUMENT_SCHEMAS[document_type]
+    schema = get_template(document_type)
+
     fields_description = "\n".join(
         f'- "{field}": {description}'
         for field, description in schema["fields"].items()
@@ -95,12 +58,11 @@ Raw OCR text to process:
 
 
 def map_fields(document_type: str, extracted_text: str) -> dict:
-    if document_type not in DOCUMENT_SCHEMAS:
-        raise ValueError(f"Unknown document type: {document_type}. "
-                         f"Available: {list(DOCUMENT_SCHEMAS.keys())}")
+    # get_template() raises TemplateNotFoundError for unknown document types —
+    # api.py catches this and turns it into a 400 response.
+    get_template(document_type)
 
     client = OpenAI(base_url=GITHUB_ENDPOINT, api_key=GITHUB_TOKEN)
-
     prompt = build_prompt(document_type, extracted_text)
 
     response = client.chat.completions.create(
@@ -111,16 +73,15 @@ def map_fields(document_type: str, extracted_text: str) -> dict:
     raw = response.choices[0].message.content.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
+    if raw.startswith("json"):
+        raw = raw[4:]
 
     return json.loads(raw.strip())
 
 
 # ── Display Result ─────────────────────────────────────────────────────────────
-
 def display_result(document_type: str, fields: dict):
-    schema_name = DOCUMENT_SCHEMAS[document_type]["name"]
+    schema_name = get_template(document_type)["name"]
     print("\n" + "═" * 60)
     print(f"  EXTRACTED FIELDS — {schema_name}")
     print("═" * 60)
@@ -132,10 +93,7 @@ def display_result(document_type: str, fields: dict):
 
 
 # ── Main (Test) ────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-
-    # Sample OCR output to test the field mapper
     sample_text = """
     Date: 29 June 2026
     Requested By: Qasim Ahmed
@@ -147,9 +105,8 @@ if __name__ == "__main__":
     """
 
     document_type = "store_request"
-
-    print(f"\n  Testing Field Mapper with document type: {document_type}")
-    print(f"  Input text:\n{sample_text}")
+    print(f"\n Testing Field Mapper with document type: {document_type}")
+    print(f" Input text:\n{sample_text}")
 
     result = map_fields(document_type, sample_text)
     display_result(document_type, result)

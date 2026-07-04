@@ -1,14 +1,14 @@
 # ScriptOCR
 
-A document OCR and field extraction system that converts handwritten and printed documents into structured data. Built as a portfolio project inspired by real document workflows at NJV High School, Karachi.
+A document OCR and field extraction system that converts handwritten and printed documents into structured data, automatically pushed into Google Sheets. Built as a portfolio project inspired by real document workflows at NJV High School, Karachi.
 
-![Python](https://img.shields.io/badge/Python-3.11-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green) ![OpenCV](https://img.shields.io/badge/OpenCV-4.x-red) ![GPT-4o](https://img.shields.io/badge/GPT--4o-Vision-orange)
+[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://img.shields.io/badge/Python-3.11-blue) [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green)](https://img.shields.io/badge/FastAPI-0.100+-green) [![OpenCV](https://img.shields.io/badge/OpenCV-4.x-red)](https://img.shields.io/badge/OpenCV-4.x-red) [![GPT-4o](https://img.shields.io/badge/GPT--4o-Vision-orange)](https://img.shields.io/badge/GPT--4o-Vision-orange)
 
 ---
 
 ## What it does
 
-Upload an image of any handwritten or printed document. ScriptOCR preprocesses the image, extracts all text using GPT-4o vision, and intelligently maps the extracted text to the specific fields of the document type — returning clean, structured JSON data ready for further processing or software integration.
+Upload an image of any handwritten or printed document — one at a time, or a whole batch at once. ScriptOCR preprocesses the image, extracts all text using GPT-4o vision, intelligently maps the extracted text to the specific fields of the document type, and pushes the structured data straight into Google Sheets — returning clean JSON ready for further processing or integration.
 
 ---
 
@@ -17,9 +17,12 @@ Upload an image of any handwritten or printed document. ScriptOCR preprocesses t
 - **Image Preprocessing** — Grayscale conversion, denoising, deskewing, and contrast enhancement via OpenCV
 - **Handwriting OCR** — Powered by GPT-4o vision for high accuracy on cursive and printed text
 - **Field Extraction** — Intelligent field mapping per document type using structured prompts
-- **REST API** — FastAPI backend with endpoints for OCR and field extraction
-- **Web UI** — Clean, professional side-by-side interface for document upload and results
-- **Multiple Document Types** — Store requests, student registration forms, procurement requests
+- **Data-Driven Templates** — Document schemas live in `templates.json`; adding a new document type is a JSON edit, not a code change
+- **Pluggable Export Layer** — Google Sheets today, other destinations (Excel, webhooks) addable without touching the API layer
+- **Google Sheets Integration** — Every successful extraction is auto-pushed as a new row, with a UI confirmation showing the row number
+- **Multi-Image Batch Upload** — Process up to 15 documents in one request, with bounded concurrency and automatic retry on transient rate limits
+- **REST API** — FastAPI backend with endpoints for single-document and batch OCR + field extraction
+- **Web UI** — Clean, professional side-by-side interface supporting both single-file and batch workflows
 - **Confidence Scoring** — Each extraction returns a confidence level and flags uncertain words
 
 ---
@@ -32,6 +35,7 @@ Upload an image of any handwritten or printed document. ScriptOCR preprocesses t
 | Image Processing | OpenCV, Pillow |
 | OCR Engine | GPT-4o via GitHub Models |
 | Backend | FastAPI, Uvicorn |
+| Sheets Integration | gspread, google-auth |
 | Frontend | HTML, CSS, JavaScript |
 
 ---
@@ -41,9 +45,13 @@ Upload an image of any handwritten or printed document. ScriptOCR preprocesses t
 ```
 ScriptOCR/
 ├── ocr.py            # Phase 1 — CLI OCR engine
-├── api.py            # Phase 2 & 3 — FastAPI backend with field mapper
-├── field_mapper.py   # Phase 3 — Document field extraction logic
-├── index.html        # Phase 5 — Web UI
+├── api.py            # Phase 2, 3 & 7c — FastAPI backend, shared pipeline, batch upload
+├── field_mapper.py   # Phase 3 — Document field extraction logic (reads templates.py)
+├── templates.json    # Phase 7 — Document schemas + export config (data, not code)
+├── templates.py       # Phase 7 — Template store loader
+├── exporters.py       # Phase 7 — Pluggable export destination layer (Google Sheets today)
+├── sheets.py          # Phase 4 — Deprecated compatibility shim over exporters.py
+├── index.html         # Phase 5 & 7c — Web UI (single-file + batch upload)
 └── README.md
 ```
 
@@ -55,38 +63,47 @@ ScriptOCR/
 
 - Python 3.11+
 - GitHub account (for free GPT-4o API access via GitHub Models)
+- Google account (for Sheets integration)
 
 ### Installation
 
-```bash
+```
 # Clone the repository
 git clone https://github.com/Qasim-Bukhari/ScriptOCR.git
 cd ScriptOCR
 
 # Install dependencies
-pip install fastapi uvicorn python-multipart opencv-python pillow openai aiofiles
+pip install fastapi uvicorn python-multipart opencv-python pillow openai aiofiles gspread google-auth
 ```
 
 ### Configuration
 
-Open `api.py` and `field_mapper.py` and set your GitHub token:
+Set your GitHub token as an environment variable (not hardcoded in any file):
 
-```python
-GITHUB_TOKEN = "your_github_token_here"
+```
+# Windows PowerShell
+$env:GITHUB_TOKEN="your_github_token_here"
+
+# Mac/Linux
+export GITHUB_TOKEN="your_github_token_here"
 ```
 
 To get a free GitHub token with GPT-4o access:
+
 1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
 2. Generate a new token (classic) with default scopes
 3. Use it to access [GitHub Models](https://github.com/marketplace/models)
 
+For Google Sheets integration, place a Google Service Account key as `credentials.json` in the project root (not included in this repo — see `.gitignore`).
+
 ### Run the server
 
-```bash
+```
 uvicorn api:app --reload
 ```
 
 Open the web UI at:
+
 ```
 http://127.0.0.1:8000/ui
 ```
@@ -100,12 +117,13 @@ http://127.0.0.1:8000/ui
 | GET | `/` | Service info |
 | GET | `/health` | Health check |
 | GET | `/document-types` | List available document types |
-| POST | `/ocr` | Extract raw text from image |
-| POST | `/ocr/fields` | Extract and map fields from image |
+| POST | `/ocr` | Extract raw text from a single image |
+| POST | `/ocr/fields` | Extract and map fields from a single image, push to Sheets |
+| POST | `/ocr/fields/batch` | Same pipeline for up to 15 images at once (one document type per batch) |
 
-### Example Request
+### Example Request (single document)
 
-```bash
+```
 curl -X POST http://127.0.0.1:8000/ocr/fields \
   -F "file=@document.jpg" \
   -F "document_type=store_request"
@@ -113,7 +131,7 @@ curl -X POST http://127.0.0.1:8000/ocr/fields \
 
 ### Example Response
 
-```json
+```
 {
   "success": true,
   "filename": "document.jpg",
@@ -130,9 +148,24 @@ curl -X POST http://127.0.0.1:8000/ocr/fields \
     "signature": "Qasim"
   },
   "low_confidence_words": [],
-  "confidence": "high"
+  "confidence": "high",
+  "sheet": {
+    "success": false,
+    "error": "No export destination configured for this document type"
+  }
 }
 ```
+
+### Example Request (batch)
+
+```
+curl -X POST http://127.0.0.1:8000/ocr/fields/batch \
+  -F "files=@doc1.jpg" \
+  -F "files=@doc2.jpg" \
+  -F "document_type=student_registration"
+```
+
+Returns a `summary` (`total`/`succeeded`/`failed`) plus a `results` array with one entry per image — a failure on one document never blocks the rest of the batch.
 
 ---
 
@@ -144,7 +177,7 @@ curl -X POST http://127.0.0.1:8000/ocr/fields \
 | `student_registration` | Student Registration Form |
 | `procurement_request` | Procurement / Inventory Request |
 
-New document types can be added by defining a schema in `field_mapper.py`.
+New document types are added by editing `templates.json` — no Python changes required. `student_registration` also has a Google Sheets export configured; the others can be wired up the same way.
 
 ---
 
@@ -153,17 +186,21 @@ New document types can be added by defining a schema in `field_mapper.py`.
 - [x] Phase 1 — CLI OCR Engine
 - [x] Phase 2 — FastAPI Backend
 - [x] Phase 3 — Field Mapper
-- [ ] Phase 4 — Integration Layer
+- [x] Phase 4 — Google Sheets Integration
 - [x] Phase 5 — Web UI
+- [x] Phase 7 — Data-Driven Templates & Pluggable Exporters
+- [x] Phase 7c — Multi-Image Batch Upload
 - [ ] Auto document type detection
+- [ ] More NJV department schemas (real data collection)
+- [ ] Multi-page single-document merging
+- [ ] Server deployment
 - [ ] Self-hosted fine-tuned OCR model
-- [ ] Processing history and logs
 
 ---
 
 ## Use Case
 
-Inspired by real document workflows at **NJV High School, Karachi**, where multiple departments handle handwritten forms manually entered into external software. ScriptOCR automates that process — from image capture to structured data extraction.
+Inspired by real document workflows at **NJV High School, Karachi**, where multiple departments handle handwritten forms manually entered into external software. ScriptOCR automates that process — from image capture to structured data landing in a spreadsheet.
 
 ---
 

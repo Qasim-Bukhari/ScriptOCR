@@ -1,0 +1,114 @@
+"""
+ScriptOCR — Exporter Layer
+
+Extraction and delivery are now decoupled. api.py no longer knows
+anything about Google Sheets specifically — it asks templates.py
+"where does this document type export to?" and gets back an Exporter
+it can call generically.
+
+Adding a new destination (Excel, a webhook, a database) means adding
+one new Exporter subclass and registering it below. api.py and
+field_mapper.py never need to change.
+"""
+
+from abc import ABC, abstractmethod
+from datetime import datetime
+
+import gspread
+from google.oauth2.service_account import Credentials
+
+from templates import get_export_config
+
+
+class Exporter(ABC):
+    """Base interface every export destination implements."""
+
+    @abstractmethod
+    def export(self, document_type: str, fields: dict) -> dict:
+        """Push extracted fields to the destination.
+        Returns a result dict with at least a 'success' key."""
+        raise NotImplementedError
+
+
+class GoogleSheetsExporter(Exporter):
+    """Pushes extracted fields to the Google Sheet configured in this
+    document type's template (see templates.json -> "export")."""
+
+    CREDENTIALS_FILE = "credentials.json"
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    def _get_client(self):
+        creds = Credentials.from_service_account_file(self.CREDENTIALS_FILE, scopes=self.SCOPES)
+        return gspread.authorize(creds)
+
+    def export(self, document_type: str, fields: dict) -> dict:
+        config = get_export_config(document_type)
+        if not config or config.get("type") != "google_sheets":
+            raise ValueError(
+                f"No Google Sheets export configured for document type: {document_type}"
+            )
+
+        sheet_id = config["sheet_id"]
+        columns = config["columns"]
+
+        client = self._get_client()
+        sheet = client.open_by_key(sheet_id).sheet1
+
+        row_data = [fields.get(col, "") for col in columns]
+        row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        sheet.append_row(row_data)
+        row_number = len(sheet.get_all_values())
+
+        return {
+            "success": True,
+            "sheet_id": sheet_id,
+            "row_number": row_number,
+            "data_pushed": dict(zip(columns, row_data)),
+        }
+
+
+# ── Exporter Registry ───────────────────────────────────────────────
+# Add new export types here as they're built (e.g. "excel": ExcelExporter).
+_EXPORTER_REGISTRY = {
+    "google_sheets": GoogleSheetsExporter,
+}
+
+
+def get_exporter(document_type: str):
+    """Returns an Exporter instance for this document type's configured
+    export destination, or None if no export is configured yet."""
+    config = get_export_config(document_type)
+    if not config:
+        return None
+    exporter_cls = _EXPORTER_REGISTRY.get(config.get("type"))
+    if exporter_cls is None:
+        raise ValueError(f"Unknown exporter type: {config.get('type')}")
+    return exporter_cls()
+
+
+# ── Test ──────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    sample_fields = {
+        "date": "01 July 2026",
+        "student_name": "Qasim Bukhari",
+        "father_name": "Aslam Bukhari",
+        "date_of_birth": "21/09/2003",
+        "class": "12",
+        "section": "B",
+        "roll_number": "123",
+        "contact_number": "0300-1234567",
+        "address": "Garden, Karachi",
+    }
+
+    print("\n Testing Google Sheets exporter...")
+    exporter = get_exporter("student_registration")
+    result = exporter.export("student_registration", sample_fields)
+    if result["success"]:
+        print(f" ✓ Data pushed successfully to row {result['row_number']}")
+        print(f" ✓ Check your sheet: https://docs.google.com/spreadsheets/d/{result['sheet_id']}")
+    else:
+        print(" ✗ Failed to push data")

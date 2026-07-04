@@ -14,6 +14,9 @@ env/
 *.jpg
 *.png
 *.bmp
+*.jfif
+*.tif
+*.tiff
 
 # OS
 .DS_Store
@@ -21,3 +24,6 @@ Thumbs.db
 
 # Documentation
 DOCUMENTATION.md
+
+# Credentials
+credentials.json
