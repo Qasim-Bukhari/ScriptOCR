@@ -13,11 +13,29 @@ field_mapper.py never need to change.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+import re
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 from templates import get_export_config
+
+
+def _normalize_header(text: str) -> str:
+    """Turns a human header like 'Employee Name' or 'S. No.' into a
+    lookup key like 'employee_name' or 's_no', so it can be matched
+    against field keys (which are already snake_case) regardless of
+    capitalization, punctuation, or spacing in the sheet."""
+    text = text.strip().lower()
+    text = re.sub(r"[^\w]+", "_", text)
+    return re.sub(r"_+", "_", text).strip("_")
+
+
+# Header names that don't correspond to an extracted field, but that the
+# exporter still knows how to fill in automatically. Add more aliases here
+# as needed — no code elsewhere needs to change.
+_AUTO_SERIAL_HEADERS = {"s_no", "sr_no", "sno", "serial_no", "serial_number", "no"}
+_AUTO_TIMESTAMP_HEADERS = {"timestamp", "submitted_at", "date_submitted", "submitted_on"}
 
 
 class Exporter(ABC):
@@ -52,13 +70,38 @@ class GoogleSheetsExporter(Exporter):
             )
 
         sheet_id = config["sheet_id"]
-        columns = config["columns"]
+        fallback_columns = config["columns"]
 
         client = self._get_client()
         sheet = client.open_by_key(sheet_id).sheet1
 
-        row_data = [fields.get(col, "") for col in columns]
-        row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        header_row = sheet.row_values(1)
+        existing_rows = len(sheet.get_all_values())
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if header_row:
+            # Header-driven: match each sheet column by its header text,
+            # in whatever order/spacing/capitalization it's actually in.
+            # Unknown headers get a blank rather than crashing, so an
+            # extra note column etc. doesn't break the export.
+            row_data = []
+            for header in header_row:
+                key = _normalize_header(header)
+                if key in fields:
+                    row_data.append(fields.get(key, ""))
+                elif key in _AUTO_SERIAL_HEADERS:
+                    row_data.append(existing_rows)  # header row + prior data rows = next serial number
+                elif key in _AUTO_TIMESTAMP_HEADERS:
+                    row_data.append(now_str)
+                else:
+                    row_data.append("")
+            columns_used = header_row
+        else:
+            # No header row yet — fall back to templates.json's declared
+            # order (the original behavior), plus a trailing timestamp.
+            row_data = [fields.get(col, "") for col in fallback_columns]
+            row_data.append(now_str)
+            columns_used = fallback_columns + ["timestamp"]
 
         sheet.append_row(row_data)
         row_number = len(sheet.get_all_values())
@@ -67,7 +110,7 @@ class GoogleSheetsExporter(Exporter):
             "success": True,
             "sheet_id": sheet_id,
             "row_number": row_number,
-            "data_pushed": dict(zip(columns, row_data)),
+            "data_pushed": dict(zip(columns_used, row_data)),
         }
 
 

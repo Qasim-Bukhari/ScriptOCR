@@ -212,6 +212,54 @@ font-size: 11px;
 color: var(--muted);
 font-family: var(--mono);
 }
+.mode-toggle {
+position: relative;
+z-index: 2;
+display: flex;
+gap: 8px;
+margin-top: 10px;
+pointer-events: auto;
+}
+.mode-option {
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+gap: 2px;
+padding: 8px 12px;
+border: 1px solid var(--border2);
+border-radius: 8px;
+background: var(--surface);
+cursor: pointer;
+transition: border-color 0.15s, background 0.15s;
+}
+.mode-option:has(input:checked) {
+border-color: var(--ink);
+background: #F1F1EE;
+}
+.mode-option input {
+position: static;
+opacity: 1;
+width: auto;
+height: auto;
+margin-right: 6px;
+cursor: pointer;
+}
+.mode-option span {
+display: flex;
+flex-direction: column;
+text-align: left;
+}
+.mode-option strong {
+font-size: 11px;
+font-weight: 500;
+color: var(--ink);
+}
+.mode-option em {
+font-size: 10px;
+font-style: normal;
+color: var(--muted);
+font-family: var(--mono);
+}
 /* ── Left Controls ── */
 .left-controls {
 padding: 18px 20px;
@@ -610,6 +658,16 @@ ScriptOCR
 <div class="upload-icon">▦</div>
 <strong id="mfiCount">0 files selected</strong>
 <span>All will be processed as the same document type</span>
+<div class="mode-toggle" id="modeToggle">
+<label class="mode-option">
+<input type="radio" name="uploadMode" value="batch" checked/>
+<span><strong>Independent documents</strong><em>Each image is its own row</em></span>
+</label>
+<label class="mode-option">
+<input type="radio" name="uploadMode" value="merge"/>
+<span><strong>Pages of one document</strong><em>Combine into a single row</em></span>
+</label>
+</div>
 </div>
 <div class="preview-wrap" id="pv">
 <button class="remove-btn" onclick="clearFile(event)">✕</button>
@@ -623,9 +681,7 @@ ScriptOCR
 <div class="field-label">Document type</div>
 <div class="select-wrap">
 <select id="dt">
-<option value="store_request">Store Request Form</option>
-<option value="student_registration">Student Registration Form</option>
-<option value="procurement_request">Procurement / Inventory Request</option>
+<option value="">Loading document types…</option>
 </select>
 </div>
 </div>
@@ -714,6 +770,13 @@ dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('ove
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); if (e.dataTransfer.files.length) load(e.dataTransfer.files); });
 fi.addEventListener('change', () => { if (fi.files.length) load(fi.files); });
+document.querySelectorAll('input[name="uploadMode"]').forEach(r => r.addEventListener('change', () => {
+  if (selectedFiles.length > 1) {
+    bt.textContent = getUploadMode() === 'merge'
+      ? `Merge ${selectedFiles.length} pages`
+      : `Extract ${selectedFiles.length} documents`;
+  }
+}));
 
 function load(fileList) {
   selectedFiles = Array.from(fileList);
@@ -765,9 +828,39 @@ function resetSteps() {
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+async function loadDocumentTypes() {
+  const dt = document.getElementById('dt');
+  try {
+    const response = await fetch('http://127.0.0.1:8000/document-types');
+    const data = await response.json();
+    const types = data.document_types || {};
+    dt.innerHTML = '';
+    Object.entries(types).forEach(([key, name]) => {
+      const opt = document.createElement('option');
+      opt.value = key; opt.textContent = name;
+      dt.appendChild(opt);
+    });
+    if (!Object.keys(types).length) {
+      dt.innerHTML = '<option value="">No document types configured</option>';
+    }
+  } catch (e) {
+    dt.innerHTML = '<option value="">Could not load document types — is the API running?</option>';
+  }
+}
+loadDocumentTypes();
+
+function getUploadMode() {
+  const checked = document.querySelector('input[name="uploadMode"]:checked');
+  return checked ? checked.value : 'batch';
+}
+
 async function run() {
   if (!selectedFiles.length) return;
-  if (selectedFiles.length > 1) { await runBatch(); return; }
+  if (selectedFiles.length > 1) {
+    if (getUploadMode() === 'merge') { await runMerge(); return; }
+    await runBatch();
+    return;
+  }
   await runSingle();
 }
 
@@ -826,6 +919,34 @@ async function runBatch() {
   }
 }
 
+async function runMerge() {
+  const count = selectedFiles.length;
+  sp.style.display = 'block'; bt.textContent = `Merging ${count} pages…`;
+  rb.disabled = true; er.style.display = 'none';
+  res.style.display = 'none'; batchResults.style.display = 'none'; em.style.display = 'none';
+  sts.style.display = 'flex'; pb.style.display = 'block';
+  setStep(1); await wait(400);
+  setStep(2);
+
+  const fd = new FormData();
+  selectedFiles.forEach(f => fd.append('files', f));
+  fd.append('document_type', document.getElementById('dt').value);
+
+  try {
+    const response = await fetch('http://127.0.0.1:8000/ocr/fields/merge', { method: 'POST', body: fd });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Request failed.');
+    setStep(3); await wait(300);
+    render(data); resetSteps(); pb.style.display = 'none';
+  } catch(e) {
+    er.textContent = e.message; er.style.display = 'block';
+    em.style.display = 'flex'; resetSteps(); pb.style.display = 'none';
+  } finally {
+    sp.style.display = 'none'; bt.textContent = `Extract ${count} documents`;
+    rb.disabled = false;
+  }
+}
+
 function render(data) {
   const conf = (data.confidence || 'unknown').toLowerCase();
   const cb = document.getElementById('cb');
@@ -833,6 +954,7 @@ function render(data) {
   cb.textContent = conf.charAt(0).toUpperCase() + conf.slice(1) + ' confidence';
 
   document.getElementById('rdoctype').textContent = data.document_name || '';
+  document.getElementById('rdoctype').textContent += data.page_count ? ` — merged ${data.page_count} pages` : '';
 
   const ss = document.getElementById('ss');
   const sheet = data.sheet || {};
@@ -875,10 +997,10 @@ function render(data) {
 function renderBatch(data) {
   document.getElementById('brdoctype').textContent = data.document_name || '';
 
-  const { total, succeeded, failed } = data.summary;
+  const { total, succeeded, failed, saved } = data.summary;
   const badge = document.getElementById('bsummary');
-  badge.textContent = `${succeeded}/${total} saved`;
-  badge.className = 'conf-badge ' + (failed === 0 ? 'ok' : (succeeded === 0 ? 'fail' : 'partial'));
+  badge.textContent = `${succeeded}/${total} extracted · ${saved}/${total} saved to sheet`;
+  badge.className = 'conf-badge ' + (failed === 0 && saved === total ? 'ok' : (succeeded === 0 ? 'fail' : 'partial'));
 
   const list = document.getElementById('brlist');
   list.innerHTML = '';

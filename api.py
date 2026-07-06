@@ -25,9 +25,10 @@ from templates import list_templates, get_template, TemplateNotFoundError
 from exporters import get_exporter
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_ENDPOINT = "https://models.inference.ai.azure.com"
-MODEL = "gpt-4o"
+# ── LLM Provider Configuration ────────────────────────────────────────────────
+# Shared with field_mapper.py via llm_config.py — see that file for how to
+# switch providers (e.g. when a daily free-tier quota runs out).
+from llm_config import LLM_API_KEY as GITHUB_TOKEN, LLM_ENDPOINT as GITHUB_ENDPOINT, LLM_MODEL as MODEL
 
 # Batch upload: bounded concurrency so a batch doesn't burst past
 # GitHub Models' rate limit (Known Issue — GitHub Models Rate Limiting).
@@ -154,19 +155,34 @@ def extract_text(image_path: str) -> dict:
     return json.loads(raw.strip())
 
 
-# ── Rate-Limit Retry ────────────────────────────────────────────────────────
+# ── Rate-Limit + Transient-Network Retry ────────────────────────────────────
 def _is_rate_limit_error(e: Exception) -> bool:
     msg = str(e)
     return "RateLimitReached" in msg or "429" in msg or "rate limit" in msg.lower()
 
 
+def _is_transient_network_error(e: Exception) -> bool:
+    """Catches timeouts and connection failures — e.g. a flaky local network
+    or DNS resolver dropping a request mid-flight. These are just as
+    transient as a 429 and worth retrying, unlike a real API/schema error."""
+    msg = str(e).lower()
+    name = type(e).__name__
+    return (
+        "timeout" in msg or "timed out" in msg
+        or "connection" in msg or "connect" in msg
+        or "nameresolutionerror" in msg or "getaddrinfo" in msg
+        or name in ("APITimeoutError", "APIConnectionError", "ConnectionError", "Timeout")
+    )
+
+
 def call_with_retry(func, *args, max_retries=RATE_LIMIT_MAX_RETRIES,
                      base_delay=RATE_LIMIT_BASE_DELAY_SECONDS, **kwargs):
     """Calls func(*args, **kwargs). If it fails with what looks like a
-    transient rate-limit error (GitHub Models' 429 RateLimitReached), retries
-    with exponential backoff (base_delay, base_delay*2, base_delay*4, ...).
-    Any other exception is re-raised immediately — this is specifically for
-    rate limits, not a general-purpose retry-everything wrapper.
+    transient error — GitHub Models' 429 RateLimitReached, or a timeout/
+    connection blip (flaky local network, DNS hiccup) — retries with
+    exponential backoff (base_delay, base_delay*2, base_delay*4, ...).
+    Any other exception (bad input, real API error) is re-raised
+    immediately — this isn't a general-purpose retry-everything wrapper.
 
     Runs inside a worker thread (via asyncio.to_thread), so the blocking
     time.sleep() here does not block the event loop or other concurrent
@@ -177,7 +193,7 @@ def call_with_retry(func, *args, max_retries=RATE_LIMIT_MAX_RETRIES,
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            if not _is_rate_limit_error(e) or attempt == max_retries:
+            if not (_is_rate_limit_error(e) or _is_transient_network_error(e)) or attempt == max_retries:
                 raise
             delay = base_delay * (2 ** attempt)
             time.sleep(delay)
@@ -185,15 +201,16 @@ def call_with_retry(func, *args, max_retries=RATE_LIMIT_MAX_RETRIES,
     raise last_error
 
 
-# ── Shared Pipeline (used by both single-file and batch endpoints) ────────────
-async def process_single_document(contents: bytes, filename: str, document_type: str) -> dict:
-    """Runs the full OCR -> field mapping -> export pipeline for one image.
+# ── Shared OCR step (used by single-file, batch, AND merge pipelines) ─────────
+async def _run_ocr(contents: bytes, filename: str) -> dict:
+    """Preprocesses + OCRs one image. Returns the raw OCR result dict
+    (extracted_text, low_confidence_words, confidence). Raises on failure —
+    callers decide how to handle that (fail the whole document vs. isolate
+    it), which is why this doesn't itself return a success/error dict.
 
-    Never raises — always returns a dict with a 'success' key, so one bad
-    image in a batch can't take down the rest of the batch. Blocking calls
-    (cv2 preprocessing, GPT-4o requests, Sheets writes) are pushed to a
-    thread via asyncio.to_thread so multiple documents can genuinely run
-    concurrently instead of queueing behind each other on the event loop.
+    Blocking calls (cv2 preprocessing, the GPT-4o request) are pushed to a
+    thread via asyncio.to_thread so multiple documents/pages can genuinely
+    run concurrently instead of queueing behind each other on the event loop.
     """
     suffix = os.path.splitext(filename)[-1] or ".png"
     tmp_path = None
@@ -204,7 +221,61 @@ async def process_single_document(contents: bytes, filename: str, document_type:
             tmp_path = tmp.name
 
         preprocessed_path = await asyncio.to_thread(preprocess_image, tmp_path)
-        ocr_result = await asyncio.to_thread(call_with_retry, extract_text, preprocessed_path)
+        return await asyncio.to_thread(call_with_retry, extract_text, preprocessed_path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if preprocessed_path and os.path.exists(preprocessed_path):
+            os.remove(preprocessed_path)
+
+
+async def ocr_only(contents: bytes, filename: str) -> dict:
+    """Same OCR step as _run_ocr, but never raises — always returns a dict
+    with a 'success' key. Used by merge mode, where each page is OCR'd
+    independently before being combined (see /ocr/fields/merge)."""
+    try:
+        ocr_result = await _run_ocr(contents, filename)
+        return {
+            "success": True,
+            "filename": filename,
+            "extracted_text": ocr_result.get("extracted_text", ""),
+            "low_confidence_words": ocr_result.get("low_confidence_words", []),
+            "confidence": ocr_result.get("confidence", "unknown"),
+        }
+    except Exception as e:
+        return {"success": False, "filename": filename, "error": str(e)}
+
+
+async def ocr_only_with_limit(contents: bytes, filename: str) -> dict:
+    """Same as ocr_only, but bounded by BATCH_CONCURRENCY_LIMIT — merge mode
+    reuses the same semaphore as batch mode since it hits the same GitHub
+    Models rate limit."""
+    async with _batch_semaphore:
+        return await ocr_only(contents, filename)
+
+
+CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def worst_confidence(confidences: List[str]) -> str:
+    """Returns the lowest confidence among a list of per-page confidences.
+    Used by merge mode to roll up one overall confidence for the merged
+    document — if any page came back 'low', the merged document is 'low'."""
+    ranked = [c for c in confidences if c in CONFIDENCE_RANK]
+    if not ranked:
+        return "unknown"
+    return min(ranked, key=lambda c: CONFIDENCE_RANK[c])
+
+
+# ── Shared Pipeline (used by both single-file and batch endpoints) ────────────
+async def process_single_document(contents: bytes, filename: str, document_type: str) -> dict:
+    """Runs the full OCR -> field mapping -> export pipeline for one image.
+
+    Never raises — always returns a dict with a 'success' key, so one bad
+    image in a batch can't take down the rest of the batch.
+    """
+    try:
+        ocr_result = await _run_ocr(contents, filename)
         extracted_text = ocr_result.get("extracted_text", "")
 
         fields = await asyncio.to_thread(call_with_retry, map_fields, document_type, extracted_text)
@@ -212,7 +283,7 @@ async def process_single_document(contents: bytes, filename: str, document_type:
         try:
             exporter = get_exporter(document_type)
             if exporter:
-                sheet_result = await asyncio.to_thread(exporter.export, document_type, fields)
+                sheet_result = await asyncio.to_thread(call_with_retry, exporter.export, document_type, fields)
             else:
                 sheet_result = {
                     "success": False,
@@ -232,11 +303,6 @@ async def process_single_document(contents: bytes, filename: str, document_type:
         }
     except Exception as e:
         return {"success": False, "filename": filename, "error": str(e)}
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        if preprocessed_path and os.path.exists(preprocessed_path):
-            os.remove(preprocessed_path)
 
 
 async def process_with_limit(contents: bytes, filename: str, document_type: str) -> dict:
@@ -261,7 +327,8 @@ def root():
         "endpoints": {
             "POST /ocr": "Extract raw text from handwritten image",
             "POST /ocr/fields": "Extract and map fields from a single handwritten image",
-            "POST /ocr/fields/batch": f"Extract and map fields from up to {BATCH_MAX_FILES} images at once",
+            "POST /ocr/fields/batch": f"Extract and map fields from up to {BATCH_MAX_FILES} images at once (independent documents)",
+            "POST /ocr/fields/merge": f"Merge up to {BATCH_MAX_FILES} page images of ONE document into a single extraction",
             "GET /document-types": "List available document types",
             "GET /health": "Check service health"
         }
@@ -378,6 +445,7 @@ async def ocr_fields_batch(
 
     succeeded = sum(1 for r in results if r["success"])
     failed = len(results) - succeeded
+    saved = sum(1 for r in results if r.get("sheet", {}).get("success"))
 
     return JSONResponse(content={
         "success": True,
@@ -386,7 +454,119 @@ async def ocr_fields_batch(
         "summary": {
             "total": len(results),
             "succeeded": succeeded,
-            "failed": failed
+            "failed": failed,
+            "saved": saved
         },
         "results": results
+    })
+
+
+@app.post("/ocr/fields/merge")
+async def ocr_fields_merge(
+    files: List[UploadFile] = File(...),
+    document_type: str = Form(...)
+):
+    """Merges multiple images that are PAGES OF ONE document (e.g. a 2-page
+    form) into a single extraction + a single exported row — distinct from
+    /ocr/fields/batch, which treats every image as an independent document.
+
+    Each page is OCR'd independently (same preprocessing/retry as every
+    other endpoint), in upload order. The extracted texts are then
+    concatenated with page markers and run through field mapping ONCE,
+    so a field split across pages (label on page 1, value on page 2) can
+    still be matched correctly. Export also happens ONCE, producing a
+    single row.
+
+    Unlike batch mode, this does NOT isolate per-page failures: if any
+    page fails OCR, the whole request fails with a 400/500 naming the
+    page, rather than exporting a row with that page's fields silently
+    missing — a partial multi-page form isn't a usable record.
+    """
+    try:
+        template = get_template(document_type)
+    except TemplateNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > BATCH_MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many pages: {len(files)}. Maximum per document is {BATCH_MAX_FILES}."
+        )
+
+    # OCR every page independently, bounded by the same concurrency limit
+    # as batch mode (same underlying GitHub Models rate limit). Tasks are
+    # built in upload order and asyncio.gather preserves that order in its
+    # results, so page order survives the concurrency.
+    tasks = []
+    for f in files:
+        if not is_allowed_image(f.filename, f.content_type):
+            async def _invalid(filename=f.filename, content_type=f.content_type):
+                return {
+                    "success": False,
+                    "filename": filename,
+                    "error": f"Invalid file type: {content_type}"
+                }
+            tasks.append(_invalid())
+            continue
+
+        contents = await f.read()
+        tasks.append(ocr_only_with_limit(contents, f.filename))
+
+    page_results = await asyncio.gather(*tasks)
+
+    failed_pages = [p for p in page_results if not p["success"]]
+    if failed_pages:
+        first = failed_pages[0]
+        raise HTTPException(
+            status_code=500,
+            detail=f"Page '{first['filename']}' failed OCR: {first.get('error', 'Unknown error')}"
+        )
+
+    merged_text = "\n\n".join(
+        f"--- Page {i + 1} ({p['filename']}) ---\n{p['extracted_text']}"
+        for i, p in enumerate(page_results)
+    )
+
+    all_low_confidence = []
+    for p in page_results:
+        all_low_confidence.extend(p.get("low_confidence_words", []))
+    overall_confidence = worst_confidence([p.get("confidence", "unknown") for p in page_results])
+
+    try:
+        fields = await asyncio.to_thread(call_with_retry, map_fields, document_type, merged_text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Field mapping failed: {e}")
+
+    try:
+        exporter = get_exporter(document_type)
+        if exporter:
+            sheet_result = await asyncio.to_thread(call_with_retry, exporter.export, document_type, fields)
+        else:
+            sheet_result = {
+                "success": False,
+                "error": "No export destination configured for this document type"
+            }
+    except Exception as export_err:
+        sheet_result = {"success": False, "error": str(export_err)}
+
+    return JSONResponse(content={
+        "success": True,
+        "document_type": document_type,
+        "document_name": template["name"],
+        "page_count": len(files),
+        "pages": [
+            {
+                "filename": p["filename"],
+                "confidence": p.get("confidence", "unknown"),
+                "low_confidence_words": p.get("low_confidence_words", [])
+            }
+            for p in page_results
+        ],
+        "extracted_text": merged_text,
+        "fields": fields,
+        "low_confidence_words": all_low_confidence,
+        "confidence": overall_confidence,
+        "sheet": sheet_result
     })

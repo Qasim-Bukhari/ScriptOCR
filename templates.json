@@ -1,42 +1,30 @@
 {
-  "store_request": {
-    "name": "Store Request Form",
+  "leave_request": {
+    "name": "Leave / Absence Request Form",
     "fields": {
-      "date": "The date the request was made",
-      "requested_by": "Full name of the person making the request",
-      "department": "Department or section of the requester",
-      "item_name": "Name of the item being requested",
-      "quantity": "Number or amount of items requested",
-      "purpose": "Reason or purpose for the request",
-      "signature": "Signature or signatory name"
-    }
-  },
-  "student_registration": {
-    "name": "Student Registration Form",
-    "fields": {
-      "date": "Date of registration",
-      "student_name": "Full name of the student",
-      "father_name": "Father's full name",
-      "date_of_birth": "Student's date of birth",
-      "class": "Class or grade the student is enrolling in",
-      "section": "Section assigned to the student",
-      "roll_number": "Roll number assigned",
-      "contact_number": "Contact phone number",
-      "address": "Home address of the student"
+      "date": "The date the request was submitted",
+      "employee_name": "Full name of the employee requesting leave",
+      "department": "Department or section of the employee",
+      "leave_type": "Type of leave (e.g. sick, casual, annual, unpaid)",
+      "start_date": "First day of leave",
+      "end_date": "Last day of leave",
+      "number_of_days": "Total number of days requested",
+      "reason": "Reason for the leave",
+      "approved_by": "Name or signature of the approving authority"
     },
     "export": {
       "type": "google_sheets",
-      "sheet_id": "1yO_iKntsAWuMdOLjRptGgWCvvBC9nLPkni9cJ2JCFik",
+      "sheet_id": "1dCXT281ZZNfiiM089H8IIKO5tn1Kl2XEvAfHX41WO8w",
       "columns": [
         "date",
-        "student_name",
-        "father_name",
-        "date_of_birth",
-        "class",
-        "section",
-        "roll_number",
-        "contact_number",
-        "address"
+        "employee_name",
+        "department",
+        "leave_type",
+        "start_date",
+        "end_date",
+        "number_of_days",
+        "reason",
+        "approved_by"
       ]
     }
   },
@@ -51,6 +39,90 @@
       "estimated_cost": "Estimated cost if mentioned",
       "purpose": "Purpose or justification for procurement",
       "approved_by": "Name of approving authority if mentioned"
+    },
+    "export": {
+      "type": "google_sheets",
+      "sheet_id": "1ABnZv54ZfAJSCbMY0DWSu1RQfPgA6gO3iNZjDxfPRoM",
+      "columns": [
+        "date",
+        "requested_by",
+        "department",
+        "item_name",
+        "quantity",
+        "estimated_cost",
+        "purpose",
+        "approved_by"
+      ]
+    }
+  },
+  "employee_registration": {
+    "name": "Employee Registration Form (Personal Info — Page 1 only)",
+    "fields": {
+      "date": "Date the form was filled out",
+      "full_name": "Full name of the employee",
+      "date_of_birth": "Employee's date of birth",
+      "address": "Home address of the employee",
+      "phone_number": "Employee's contact phone number",
+      "email": "Employee's email address",
+      "emergency_contact_name": "Full name of the emergency contact person",
+      "emergency_contact_phone": "Phone number of the emergency contact"
+    },
+    "export": {
+      "type": "google_sheets",
+      "sheet_id": "1x4HmwmImTpIL9eOtngkiyL3kpzwb_RCr_cNBIRqYLk8",
+      "columns": [
+        "date",
+        "full_name",
+        "date_of_birth",
+        "address",
+        "phone_number",
+        "email",
+        "emergency_contact_name",
+        "emergency_contact_phone"
+      ]
+    }
+  },
+  "employee_registration_full": {
+    "name": "Employee Registration Form (Full — Personal + Employment, 2 pages)",
+    "fields": {
+      "date": "Date the form was filled out",
+      "full_name": "Full name of the employee",
+      "date_of_birth": "Employee's date of birth",
+      "address": "Home address of the employee",
+      "phone_number": "Employee's contact phone number",
+      "email": "Employee's email address",
+      "emergency_contact_name": "Full name of the emergency contact person",
+      "emergency_contact_phone": "Phone number of the emergency contact",
+      "position": "Job title or designation of the employee",
+      "department": "Department the employee is joining",
+      "employment_type": "Type of employment (e.g. full-time, part-time, contract)",
+      "start_date": "Employment start date",
+      "reporting_manager": "Name of the employee's reporting manager",
+      "salary_grade": "Salary grade or band assigned",
+      "previous_employer": "Name of the employee's previous employer, if any",
+      "hr_signature": "Name or signature of the HR representative"
+    },
+    "export": {
+      "type": "google_sheets",
+      "sheet_id": "1PKW2SReTV_XomqLzJIUqCIlvlzzzRuAmjK1I2cHdBbk",
+      "columns": [
+        "date",
+        "full_name",
+        "date_of_birth",
+        "address",
+        "phone_number",
+        "email",
+        "emergency_contact_name",
+        "emergency_contact_phone",
+        "position",
+        "department",
+        "employment_type",
+        "start_date",
+        "reporting_manager",
+        "salary_grade",
+        "previous_employer",
+        "hr_signature"
+      ]
     }
   }
 }

@@ -15,9 +15,9 @@ from openai import OpenAI
 from templates import get_template, TEMPLATES, TemplateNotFoundError
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_ENDPOINT = "https://models.inference.ai.azure.com"
-MODEL = "gpt-4o"
+# Shared with api.py via llm_config.py — see that file for how to switch
+# providers (e.g. when a daily free-tier quota runs out).
+from llm_config import LLM_API_KEY as GITHUB_TOKEN, LLM_ENDPOINT as GITHUB_ENDPOINT, LLM_MODEL as MODEL
 
 # Backward-compatible alias. The source of truth is now templates.json,
 # but anything that still imports DOCUMENT_SCHEMAS from here keeps working.
@@ -48,6 +48,9 @@ Rules:
 3. Do not guess or invent values.
 4. Return ONLY a JSON object with these exact field names.
 5. No markdown, no backticks, no explanation.
+6. For any field that represents a date, normalize it to "DD Month YYYY"
+   (e.g. "04 July 2026") — no hyphens, no slashes, no extra spaces around
+   words, regardless of how it was written or punctuated in the source text.
 
 Expected output format:
 {json.dumps(empty_fields, indent=2)}
