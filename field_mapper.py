@@ -98,16 +98,19 @@ def display_result(document_type: str, fields: dict):
 # ── Main (Test) ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     sample_text = """
+    Leave / Absence Request Form
     Date: 29 June 2026
-    Requested By: Qasim Ahmed
-    Department: Science Room
-    Item: Whiteboard Markers
-    Quantity: 10 pieces
-    Purpose: Required for daily classroom teaching
-    Signature: Q. Ahmed
+    Employee Name: Qasim Ahmed
+    Department: Operations
+    Leave Type: Casual
+    Start Date: 01 July 2026
+    End Date: 03 July 2026
+    Number of Days: 3
+    Reason: Family event out of town
+    Approved By: M. Rehman
     """
 
-    document_type = "store_request"
+    document_type = "leave_request"
     print(f"\n Testing Field Mapper with document type: {document_type}")
     print(f" Input text:\n{sample_text}")
 

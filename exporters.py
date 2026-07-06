@@ -137,19 +137,19 @@ def get_exporter(document_type: str):
 if __name__ == "__main__":
     sample_fields = {
         "date": "01 July 2026",
-        "student_name": "Qasim Bukhari",
-        "father_name": "Aslam Bukhari",
-        "date_of_birth": "21/09/2003",
-        "class": "12",
-        "section": "B",
-        "roll_number": "123",
-        "contact_number": "0300-1234567",
-        "address": "Garden, Karachi",
+        "employee_name": "Qasim Bukhari",
+        "department": "Operations",
+        "leave_type": "Casual",
+        "start_date": "01 July 2026",
+        "end_date": "03 July 2026",
+        "number_of_days": "3",
+        "reason": "Family event out of town",
+        "approved_by": "M. Rehman",
     }
 
     print("\n Testing Google Sheets exporter...")
-    exporter = get_exporter("student_registration")
-    result = exporter.export("student_registration", sample_fields)
+    exporter = get_exporter("leave_request")
+    result = exporter.export("leave_request", sample_fields)
     if result["success"]:
         print(f" ✓ Data pushed successfully to row {result['row_number']}")
         print(f" ✓ Check your sheet: https://docs.google.com/spreadsheets/d/{result['sheet_id']}")
