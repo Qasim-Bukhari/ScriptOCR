@@ -21,6 +21,7 @@ gemini-2.5-flash vs gemini-2.0-flash on Gemini).
 """
 
 import os
+from openai import OpenAI
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "github").lower()
 
@@ -32,3 +33,16 @@ else:
     LLM_API_KEY = os.environ.get("GITHUB_TOKEN", "")
     LLM_ENDPOINT = "https://models.inference.ai.azure.com"
     LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+
+# ── Shared HTTP client ───────────────────────────────────────────────────────
+# Built ONCE at import time and reused for every call, instead of api.py and
+# field_mapper.py each constructing a fresh OpenAI(...) client per request.
+# Constructing a client builds a new connection pool + SSL context every
+# time — the openai library's own docs recommend reusing one client — and
+# doing that repeatedly from concurrent threads (as batch/merge mode do via
+# asyncio.to_thread) is a known source of exactly the kind of mysterious,
+# growing latency observed in testing (fast for the first ~2 calls in a
+# batch, then a jump to 50+ seconds per call afterward, reproduced across
+# two unrelated providers and two unrelated networks — pointing at
+# something in our own client usage, not the network or provider).
+llm_client = OpenAI(base_url=LLM_ENDPOINT, api_key=LLM_API_KEY)

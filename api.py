@@ -6,6 +6,9 @@ FastAPI Backend with Field Mapper integrated
 Usage: uvicorn api:app --reload
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import json
 import base64
@@ -18,9 +21,10 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
-from field_mapper import map_fields
+from field_mapper import map_fields, extract_and_map_fields
 from templates import list_templates, get_template, TemplateNotFoundError
 from exporters import get_exporter
 
@@ -28,13 +32,13 @@ from exporters import get_exporter
 # ── LLM Provider Configuration ────────────────────────────────────────────────
 # Shared with field_mapper.py via llm_config.py — see that file for how to
 # switch providers (e.g. when a daily free-tier quota runs out).
-from llm_config import LLM_API_KEY as GITHUB_TOKEN, LLM_ENDPOINT as GITHUB_ENDPOINT, LLM_MODEL as MODEL
+from llm_config import LLM_API_KEY as GITHUB_TOKEN, LLM_ENDPOINT as GITHUB_ENDPOINT, LLM_MODEL as MODEL, llm_client
 
 # Batch upload: bounded concurrency so a batch doesn't burst past
 # GitHub Models' rate limit (Known Issue — GitHub Models Rate Limiting).
 # GitHub Models' free tier enforces UserConcurrentRequests = 2 — confirmed
 # in production via a 429 "RateLimitReached" error at concurrency 3.
-BATCH_CONCURRENCY_LIMIT = 2
+BATCH_CONCURRENCY_LIMIT = int(os.environ.get("BATCH_CONCURRENCY_LIMIT", "2"))
 BATCH_MAX_FILES = 15
 
 # Retry/backoff for transient rate-limit errors from GitHub Models. A single
@@ -90,6 +94,15 @@ app = FastAPI(
     version="3.2.0"
 )
 
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
 _batch_semaphore = asyncio.Semaphore(BATCH_CONCURRENCY_LIMIT)
 
 
@@ -133,7 +146,7 @@ def preprocess_image(image_path: str) -> str:
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
 def extract_text(image_path: str) -> dict:
-    client = OpenAI(base_url=GITHUB_ENDPOINT, api_key=GITHUB_TOKEN)
+    client = llm_client
 
     with open(image_path, "rb") as f:
         encoded_image = base64.b64encode(f.read()).decode("utf-8")
@@ -184,6 +197,12 @@ def call_with_retry(func, *args, max_retries=RATE_LIMIT_MAX_RETRIES,
     Any other exception (bad input, real API error) is re-raised
     immediately — this isn't a general-purpose retry-everything wrapper.
 
+    Prints when a retry actually fires, with which function, which
+    attempt, and how long it's sleeping — otherwise these backoff delays
+    are invisible in the terminal and just look like unexplained slowness
+    (this was found after a 5-document batch took ~140s when ~45-60s was
+    expected, with no way to tell whether retries were the cause).
+
     Runs inside a worker thread (via asyncio.to_thread), so the blocking
     time.sleep() here does not block the event loop or other concurrent
     documents.
@@ -196,36 +215,68 @@ def call_with_retry(func, *args, max_retries=RATE_LIMIT_MAX_RETRIES,
             if not (_is_rate_limit_error(e) or _is_transient_network_error(e)) or attempt == max_retries:
                 raise
             delay = base_delay * (2 ** attempt)
+            print(f"[retry] {func.__name__} failed (attempt {attempt + 1}/{max_retries + 1}): "
+                  f"{type(e).__name__}: {e} — retrying in {delay}s")
             time.sleep(delay)
             last_error = e
     raise last_error
 
 
-# ── Shared OCR step (used by single-file, batch, AND merge pipelines) ─────────
-async def _run_ocr(contents: bytes, filename: str) -> dict:
-    """Preprocesses + OCRs one image. Returns the raw OCR result dict
-    (extracted_text, low_confidence_words, confidence). Raises on failure —
-    callers decide how to handle that (fail the whole document vs. isolate
-    it), which is why this doesn't itself return a success/error dict.
-
-    Blocking calls (cv2 preprocessing, the GPT-4o request) are pushed to a
-    thread via asyncio.to_thread so multiple documents/pages can genuinely
-    run concurrently instead of queueing behind each other on the event loop.
-    """
+# ── Shared preprocessing step (used by every pipeline) ─────────────────────
+async def _preprocess(contents: bytes, filename: str) -> str:
+    """Writes image bytes to a temp file, preprocesses it, and returns the
+    preprocessed file's path. The raw temp file is cleaned up immediately;
+    the caller owns cleanup of the returned preprocessed file."""
     suffix = os.path.splitext(filename)[-1] or ".png"
     tmp_path = None
-    preprocessed_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(contents)
             tmp_path = tmp.name
-
-        preprocessed_path = await asyncio.to_thread(preprocess_image, tmp_path)
-        return await asyncio.to_thread(call_with_retry, extract_text, preprocessed_path)
+        return await asyncio.to_thread(preprocess_image, tmp_path)
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        if preprocessed_path and os.path.exists(preprocessed_path):
+
+
+async def _run_ocr(contents: bytes, filename: str) -> dict:
+    """OCR-only (no field mapping) — extracted_text/low_confidence_words/
+    confidence, nothing else. Used ONLY by merge mode's per-page step,
+    where fields can't be mapped yet because a multi-page document's
+    fields may span several images (see /ocr/fields/merge). Raises on
+    failure — callers decide how to handle that.
+    """
+    preprocessed_path = await _preprocess(contents, filename)
+    try:
+        return await asyncio.to_thread(call_with_retry, extract_text, preprocessed_path)
+    finally:
+        if os.path.exists(preprocessed_path):
+            os.remove(preprocessed_path)
+
+
+async def _run_extract_and_map(contents: bytes, filename: str, document_type: str) -> dict:
+    """OCR + field mapping in ONE model call (extract_and_map_fields in
+    field_mapper.py), instead of two sequential round-trips. Used by the
+    single-document and batch pipelines, where one image = one document,
+    so OCR and field mapping can safely happen together. Roughly halves
+    per-document latency and API-quota usage vs. the old two-call flow.
+    Raises on failure — callers decide how to handle that.
+    """
+    print(f"[timing] {filename}: raw upload size={len(contents) / 1024:.0f}KB")
+    prep_start = time.monotonic()
+    preprocessed_path = await _preprocess(contents, filename)
+    prep_elapsed = time.monotonic() - prep_start
+    preprocessed_size = os.path.getsize(preprocessed_path) / 1024
+    print(f"[timing] {filename}: preprocessing={prep_elapsed:.1f}s, "
+          f"preprocessed size={preprocessed_size:.0f}KB")
+    try:
+        model_start = time.monotonic()
+        result = await asyncio.to_thread(call_with_retry, extract_and_map_fields, preprocessed_path, document_type)
+        model_elapsed = time.monotonic() - model_start
+        print(f"[timing] {filename}: model call={model_elapsed:.1f}s")
+        return result
+    finally:
+        if os.path.exists(preprocessed_path):
             os.remove(preprocessed_path)
 
 
@@ -269,17 +320,23 @@ def worst_confidence(confidences: List[str]) -> str:
 
 # ── Shared Pipeline (used by both single-file and batch endpoints) ────────────
 async def process_single_document(contents: bytes, filename: str, document_type: str) -> dict:
-    """Runs the full OCR -> field mapping -> export pipeline for one image.
+    """Runs the full OCR+field-mapping -> export pipeline for one image.
+    OCR and field mapping now happen in a single model call (see
+    _run_extract_and_map) instead of two sequential ones — this was the
+    single biggest latency/quota win available, since it cuts one full
+    model round-trip per document.
 
     Never raises — always returns a dict with a 'success' key, so one bad
     image in a batch can't take down the rest of the batch.
     """
     try:
-        ocr_result = await _run_ocr(contents, filename)
-        extracted_text = ocr_result.get("extracted_text", "")
+        start = time.monotonic()
+        result = await _run_extract_and_map(contents, filename, document_type)
+        extract_elapsed = time.monotonic() - start
+        extracted_text = result.get("extracted_text", "")
+        fields = result.get("fields", {})
 
-        fields = await asyncio.to_thread(call_with_retry, map_fields, document_type, extracted_text)
-
+        export_start = time.monotonic()
         try:
             exporter = get_exporter(document_type)
             if exporter:
@@ -291,14 +348,18 @@ async def process_single_document(contents: bytes, filename: str, document_type:
                 }
         except Exception as export_err:
             sheet_result = {"success": False, "error": str(export_err)}
+        export_elapsed = time.monotonic() - export_start
+
+        print(f"[timing] {filename}: extract+map={extract_elapsed:.1f}s, export={export_elapsed:.1f}s, "
+              f"total={extract_elapsed + export_elapsed:.1f}s")
 
         return {
             "success": True,
             "filename": filename,
             "extracted_text": extracted_text,
             "fields": fields,
-            "low_confidence_words": ocr_result.get("low_confidence_words", []),
-            "confidence": ocr_result.get("confidence", "unknown"),
+            "low_confidence_words": result.get("low_confidence_words", []),
+            "confidence": result.get("confidence", "unknown"),
             "sheet": sheet_result
         }
     except Exception as e:
@@ -441,7 +502,11 @@ async def ocr_fields_batch(
         contents = await f.read()
         tasks.append(process_with_limit(contents, f.filename, document_type))
 
+    batch_start = time.monotonic()
     results = await asyncio.gather(*tasks)
+    batch_elapsed = time.monotonic() - batch_start
+    print(f"[timing] batch of {len(files)} files: total wall-clock={batch_elapsed:.1f}s "
+          f"(concurrency limit={BATCH_CONCURRENCY_LIMIT})")
 
     succeeded = sum(1 for r in results if r["success"])
     failed = len(results) - succeeded
