@@ -11,9 +11,9 @@ one new Exporter subclass and registering it below. api.py and
 field_mapper.py never need to change.
 """
 
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime
-import os
 import re
 
 import gspread
@@ -39,6 +39,44 @@ _AUTO_SERIAL_HEADERS = {"s_no", "sr_no", "sno", "serial_no", "serial_number", "n
 _AUTO_TIMESTAMP_HEADERS = {"timestamp", "submitted_at", "date_submitted", "submitted_on"}
 
 
+# ── Row-count cache ──────────────────────────────────────────────────────
+# sheet_id -> last known row count (header + data rows), equivalent to what
+# `len(sheet.get_all_values())` used to return on every single export.
+#
+# Seeded once per sheet per server run via a cheap single-column read
+# (col_values(1)), then kept in sync from each append — one row added per
+# successful export, so the cache just increments by 1 instead of doing
+# another read. This replaces a full-grid read on every export, which was
+# also happening while holding api.py's global _export_lock — meaning it
+# was serializing ALL exports (even to unrelated sheets) behind an
+# increasingly expensive read as any one sheet grew.
+#
+# Safe without its own locking: every export() call already runs behind
+# that same global _export_lock in api.py, so exports never happen
+# concurrently within this process.
+#
+# Tradeoff: if a Sheet's rows are added/removed by hand (outside this app)
+# while the server keeps running, this cache can drift until the next
+# server restart, which reseeds it fresh. Acceptable for a dev/demo
+# workflow with frequent restarts. If NJV staff will be actively
+# hand-editing these Sheets during long-running sessions, this should
+# re-verify periodically instead of only seeding once at startup — flag
+# it if that becomes the actual usage pattern.
+_row_count_cache: dict[str, int] = {}
+
+
+def _get_row_count(sheet, sheet_id: str) -> int:
+    """Returns the current row count (header + data), using the in-memory
+    cache when available. On a cache miss, seeds it with a single-column
+    read instead of a full-grid read — cheap regardless of how many
+    columns the sheet has, at the cost of assuming column A has no gaps
+    (true for every template's export config today, since column A is
+    always either a real field or an auto-filled serial/timestamp)."""
+    if sheet_id not in _row_count_cache:
+        _row_count_cache[sheet_id] = len(sheet.col_values(1))
+    return _row_count_cache[sheet_id]
+
+
 class Exporter(ABC):
     """Base interface every export destination implements."""
 
@@ -53,6 +91,10 @@ class GoogleSheetsExporter(Exporter):
     """Pushes extracted fields to the Google Sheet configured in this
     document type's template (see templates.json -> "export")."""
 
+    # Configurable so a deployed host can mount the service account key
+    # wherever it lands (e.g. Render's Secret Files feature writes it to
+    # a path the platform controls) without changing code — defaults to
+    # the local dev convention of a credentials.json in the project root.
     CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
     SCOPES = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -77,7 +119,7 @@ class GoogleSheetsExporter(Exporter):
         sheet = client.open_by_key(sheet_id).sheet1
 
         header_row = sheet.row_values(1)
-        existing_rows = len(sheet.get_all_values())
+        existing_rows = _get_row_count(sheet, sheet_id)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if header_row:
@@ -108,6 +150,10 @@ class GoogleSheetsExporter(Exporter):
         updated_range = response.get("updates", {}).get("updatedRange", "")
         match = re.search(r"![A-Za-z]+(\d+)", updated_range)
         row_number = int(match.group(1)) if match else None
+
+        # Keep the cache in sync with the row we just added — we know
+        # exactly one row was appended, so no extra read is needed.
+        _row_count_cache[sheet_id] = existing_rows + 1
 
         return {
             "success": True,
