@@ -13,6 +13,7 @@ field_mapper.py never need to change.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+import os
 import re
 
 import gspread
@@ -52,7 +53,7 @@ class GoogleSheetsExporter(Exporter):
     """Pushes extracted fields to the Google Sheet configured in this
     document type's template (see templates.json -> "export")."""
 
-    CREDENTIALS_FILE = "credentials.json"
+    CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
     SCOPES = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
