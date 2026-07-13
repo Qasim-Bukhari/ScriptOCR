@@ -103,8 +103,10 @@ class GoogleSheetsExporter(Exporter):
             row_data.append(now_str)
             columns_used = fallback_columns + ["timestamp"]
 
-        sheet.append_row(row_data)
-        row_number = len(sheet.get_all_values())
+        response = sheet.append_row(row_data, insert_data_option="INSERT_ROWS")
+        updated_range = response.get("updates", {}).get("updatedRange", "")
+        match = re.search(r"![A-Za-z]+(\d+)", updated_range)
+        row_number = int(match.group(1)) if match else None
 
         return {
             "success": True,

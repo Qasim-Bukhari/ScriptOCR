@@ -8,21 +8,22 @@ A document OCR and field extraction system that converts handwritten and printed
 
 ## What it does
 
-Upload an image of any handwritten or printed document — one at a time, or a whole batch at once. ScriptOCR preprocesses the image, extracts all text using GPT-4o vision, intelligently maps the extracted text to the specific fields of the document type, and pushes the structured data straight into Google Sheets — returning clean JSON ready for further processing or integration.
+Upload an image of any handwritten or printed document — one at a time, a batch of independent documents, or multiple pages of the same document. ScriptOCR preprocesses the image, extracts all text using GPT-4o vision (or Gemini, see Configuration), intelligently maps the extracted text to the specific fields of the document type, and pushes the structured data straight into Google Sheets — returning clean JSON ready for further processing or integration.
 
 ---
 
 ## Features
 
 - **Image Preprocessing** — Grayscale conversion, denoising, deskewing, and contrast enhancement via OpenCV
-- **Handwriting OCR** — Powered by GPT-4o vision for high accuracy on cursive and printed text
-- **Field Extraction** — Intelligent field mapping per document type using structured prompts
+- **Handwriting OCR** — Powered by GPT-4o vision (GitHub Models) or Gemini, switchable via one environment variable
+- **Field Extraction** — Intelligent field mapping per document type using structured prompts, done in the same model call as OCR for single/batch documents
 - **Data-Driven Templates** — Document schemas live in `templates.json`; adding a new document type is a JSON edit, not a code change
-- **Pluggable Export Layer** — Google Sheets today, other destinations (Excel, webhooks) addable without touching the API layer
+- **Pluggable Export Layer** — Google Sheets today, other destinations addable without touching the API layer
 - **Google Sheets Integration** — Every successful extraction is auto-pushed as a new row, with a UI confirmation showing the row number
-- **Multi-Image Batch Upload** — Process up to 15 documents in one request, with bounded concurrency and automatic retry on transient rate limits
-- **REST API** — FastAPI backend with endpoints for single-document and batch OCR + field extraction
-- **Web UI** — Clean, professional side-by-side interface supporting both single-file and batch workflows
+- **Multi-Image Batch Upload** — Process up to 15 independent documents in one request, with bounded concurrency and automatic retry on transient rate limits
+- **Multi-Page Merge Mode** — Combine multiple page images of ONE document into a single extraction and a single exported row
+- **REST API** — FastAPI backend with endpoints for single-document, batch, and merge OCR + field extraction
+- **Web UI** — Clean, professional interface supporting single-file, batch, and merge workflows
 - **Confidence Scoring** — Each extraction returns a confidence level and flags uncertain words
 
 ---
@@ -32,8 +33,8 @@ Upload an image of any handwritten or printed document — one at a time, or a w
 | Layer | Technology |
 |---|---|
 | Language | Python 3.11 |
-| Image Processing | OpenCV, Pillow |
-| OCR Engine | GPT-4o via GitHub Models |
+| Image Processing | OpenCV |
+| OCR Engine | GPT-4o (GitHub Models) or Gemini — configurable |
 | Backend | FastAPI, Uvicorn |
 | Sheets Integration | gspread, google-auth |
 | Frontend | HTML, CSS, JavaScript |
@@ -44,14 +45,14 @@ Upload an image of any handwritten or printed document — one at a time, or a w
 
 ```
 ScriptOCR/
-├── ocr.py            # Phase 1 — CLI OCR engine
-├── api.py            # Phase 2, 3 & 7c — FastAPI backend, shared pipeline, batch upload
-├── field_mapper.py   # Phase 3 — Document field extraction logic (reads templates.py)
-├── templates.json    # Phase 7 — Document schemas + export config (data, not code)
-├── templates.py       # Phase 7 — Template store loader
-├── exporters.py       # Phase 7 — Pluggable export destination layer (Google Sheets today)
-├── sheets.py          # Phase 4 — Deprecated compatibility shim over exporters.py
-├── index.html         # Phase 5 & 7c — Web UI (single-file + batch upload)
+├── api.py             # FastAPI backend — shared pipeline, single/batch/merge endpoints
+├── field_mapper.py    # Document field extraction logic (reads templates.py)
+├── llm_config.py       # Single source of truth for LLM provider/model config
+├── templates.json      # Document schemas + export config (data, not code)
+├── templates.py        # Template store loader
+├── exporters.py         # Pluggable export destination layer (Google Sheets today)
+├── index.html           # Web UI (single-file, batch, and merge upload)
+├── requirements.txt      # Pinned dependencies
 └── README.md
 ```
 
@@ -62,39 +63,39 @@ ScriptOCR/
 ### Prerequisites
 
 - Python 3.11+
-- GitHub account (for free GPT-4o API access via GitHub Models)
-- Google account (for Sheets integration)
+- Either a GitHub account (free GPT-4o access via GitHub Models) or a Google account (free Gemini API key)
+- A Google Cloud service account (for Sheets export)
 
 ### Installation
 
 ```
-# Clone the repository
 git clone https://github.com/Qasim-Bukhari/ScriptOCR.git
 cd ScriptOCR
 
-# Install dependencies
-pip install fastapi uvicorn python-multipart opencv-python pillow openai aiofiles gspread google-auth
+python -m venv venv
+venv\Scripts\activate        # Windows — Mac/Linux: source venv/bin/activate
+
+python -m pip install -r requirements.txt
 ```
 
 ### Configuration
 
-Set your GitHub token as an environment variable (not hardcoded in any file):
+Create a `.env` file in the project root (already gitignored — never commit this file):
 
 ```
-# Windows PowerShell
-$env:GITHUB_TOKEN="your_github_token_here"
-
-# Mac/Linux
-export GITHUB_TOKEN="your_github_token_here"
+GITHUB_TOKEN=your_github_token_here
+LLM_PROVIDER=github
+ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 ```
 
 To get a free GitHub token with GPT-4o access:
-
 1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
 2. Generate a new token (classic) with default scopes
 3. Use it to access [GitHub Models](https://github.com/marketplace/models)
 
-For Google Sheets integration, place a Google Service Account key as `credentials.json` in the project root (not included in this repo — see `.gitignore`).
+**Switching to Gemini instead** (e.g. if GitHub Models' daily quota runs out): set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY=your_key` in `.env` instead. See `llm_config.py` for details — no code changes needed either way.
+
+For Google Sheets export, place a Google Service Account key as `credentials.json` in the project root (gitignored, not included in this repo). Share each target Sheet with that service account's `client_email` as an Editor.
 
 ### Run the server
 
@@ -103,7 +104,6 @@ uvicorn api:app --reload
 ```
 
 Open the web UI at:
-
 ```
 http://127.0.0.1:8000/ui
 ```
@@ -119,53 +119,67 @@ http://127.0.0.1:8000/ui
 | GET | `/document-types` | List available document types |
 | POST | `/ocr` | Extract raw text from a single image |
 | POST | `/ocr/fields` | Extract and map fields from a single image, push to Sheets |
-| POST | `/ocr/fields/batch` | Same pipeline for up to 15 images at once (one document type per batch) |
+| POST | `/ocr/fields/batch` | Same pipeline for up to 15 independent documents at once |
+| POST | `/ocr/fields/merge` | Merge up to 15 page images of ONE document into a single extraction + row |
 
 ### Example Request (single document)
 
 ```
 curl -X POST http://127.0.0.1:8000/ocr/fields \
   -F "file=@document.jpg" \
-  -F "document_type=store_request"
+  -F "document_type=leave_request"
 ```
 
 ### Example Response
 
-```
+```json
 {
   "success": true,
   "filename": "document.jpg",
-  "document_type": "store_request",
-  "document_name": "Store Request Form",
-  "extracted_text": "Store Request Form\nDate: 01 July 2026\n...",
+  "document_type": "leave_request",
+  "document_name": "Leave / Absence Request Form",
+  "extracted_text": "Leave / Absence Request Form\nDate: 04 July 2026\n...",
   "fields": {
-    "date": "01 July 2026",
-    "requested_by": "Qasim Bukhari",
-    "department": "Science Room",
-    "item_name": "Whiteboard Markers",
-    "quantity": "10 pieces",
-    "purpose": "Required for daily classroom teaching",
-    "signature": "Qasim"
+    "date": "04 July 2026",
+    "employee_name": "Hamza Tariq",
+    "department": "IT Support",
+    "leave_type": "Casual",
+    "start_date": "10 July 2026",
+    "end_date": "10 July 2026",
+    "number_of_days": "1",
+    "reason": "Personal error - visiting NADRA office for CNIC Renewal.",
+    "approved_by": "Nadia Chaudhry"
   },
   "low_confidence_words": [],
   "confidence": "high",
   "sheet": {
-    "success": false,
-    "error": "No export destination configured for this document type"
+    "success": true,
+    "row_number": 50
   }
 }
 ```
 
-### Example Request (batch)
+### Example Request (batch — independent documents)
 
 ```
 curl -X POST http://127.0.0.1:8000/ocr/fields/batch \
   -F "files=@doc1.jpg" \
   -F "files=@doc2.jpg" \
-  -F "document_type=student_registration"
+  -F "document_type=procurement_request"
 ```
 
-Returns a `summary` (`total`/`succeeded`/`failed`) plus a `results` array with one entry per image — a failure on one document never blocks the rest of the batch.
+Returns a `summary` (`total`/`succeeded`/`failed`/`saved`) plus a `results` array with one entry per image — a failure on one document never blocks the rest of the batch.
+
+### Example Request (merge — pages of one document)
+
+```
+curl -X POST http://127.0.0.1:8000/ocr/fields/merge \
+  -F "files=@page1.jpg" \
+  -F "files=@page2.jpg" \
+  -F "document_type=employee_registration_full"
+```
+
+Unlike batch mode, a failure on any page fails the whole request — a partial multi-page form isn't a usable record.
 
 ---
 
@@ -173,28 +187,31 @@ Returns a `summary` (`total`/`succeeded`/`failed`) plus a `results` array with o
 
 | Key | Document |
 |---|---|
-| `store_request` | Store Request Form |
-| `student_registration` | Student Registration Form |
-| `procurement_request` | Procurement / Inventory Request |
+| `leave_request` | Leave / Absence Request Form |
+| `procurement_request` | Procurement / Inventory Request Form |
+| `employee_registration` | Employee Registration Form (Personal Info — Page 1 only) |
+| `employee_registration_full` | Employee Registration Form (Full — Personal + Employment, 2 pages) |
 
-New document types are added by editing `templates.json` — no Python changes required. `student_registration` also has a Google Sheets export configured; the others can be wired up the same way.
+New document types are added by editing `templates.json` — no Python changes required.
 
 ---
 
 ## Roadmap
 
-- [x] Phase 1 — CLI OCR Engine
-- [x] Phase 2 — FastAPI Backend
-- [x] Phase 3 — Field Mapper
-- [x] Phase 4 — Google Sheets Integration
-- [x] Phase 5 — Web UI
-- [x] Phase 7 — Data-Driven Templates & Pluggable Exporters
-- [x] Phase 7c — Multi-Image Batch Upload
+- [x] CLI OCR Engine
+- [x] FastAPI Backend
+- [x] Field Mapper
+- [x] Google Sheets Integration
+- [x] Web UI
+- [x] Data-Driven Templates & Pluggable Exporters
+- [x] Multi-Image Batch Upload
+- [x] Multi-Page Merge Mode
+- [x] Multi-provider LLM support (GitHub Models / Gemini)
 - [ ] Auto document type detection
 - [ ] More NJV department schemas (real data collection)
-- [ ] Multi-page single-document merging
 - [ ] Server deployment
 - [ ] Self-hosted fine-tuned OCR model
+- [ ] Processing history and logs
 
 ---
 

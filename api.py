@@ -32,7 +32,7 @@ from exporters import get_exporter
 # ── LLM Provider Configuration ────────────────────────────────────────────────
 # Shared with field_mapper.py via llm_config.py — see that file for how to
 # switch providers (e.g. when a daily free-tier quota runs out).
-from llm_config import LLM_API_KEY as GITHUB_TOKEN, LLM_ENDPOINT as GITHUB_ENDPOINT, LLM_MODEL as MODEL, llm_client
+from llm_config import LLM_MODEL as MODEL, llm_client
 
 # Batch upload: bounded concurrency so a batch doesn't burst past
 # GitHub Models' rate limit (Known Issue — GitHub Models Rate Limiting).
@@ -104,6 +104,7 @@ app.add_middleware(
 )
 
 _batch_semaphore = asyncio.Semaphore(BATCH_CONCURRENCY_LIMIT)
+_export_lock = asyncio.Lock()
 
 
 # ── Image Preprocessing ────────────────────────────────────────────────────────
@@ -340,7 +341,8 @@ async def process_single_document(contents: bytes, filename: str, document_type:
         try:
             exporter = get_exporter(document_type)
             if exporter:
-                sheet_result = await asyncio.to_thread(call_with_retry, exporter.export, document_type, fields)
+                async with _export_lock:
+                    sheet_result = await asyncio.to_thread(call_with_retry, exporter.export, document_type, fields)
             else:
                 sheet_result = {
                     "success": False,
@@ -607,7 +609,8 @@ async def ocr_fields_merge(
     try:
         exporter = get_exporter(document_type)
         if exporter:
-            sheet_result = await asyncio.to_thread(call_with_retry, exporter.export, document_type, fields)
+            async with _export_lock:
+                sheet_result = await asyncio.to_thread(call_with_retry, exporter.export, document_type, fields)
         else:
             sheet_result = {
                 "success": False,

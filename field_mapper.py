@@ -18,7 +18,7 @@ from templates import get_template, TEMPLATES, TemplateNotFoundError
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Shared with api.py via llm_config.py — see that file for how to switch
 # providers (e.g. when a daily free-tier quota runs out).
-from llm_config import LLM_API_KEY as GITHUB_TOKEN, LLM_ENDPOINT as GITHUB_ENDPOINT, LLM_MODEL as MODEL, llm_client
+from llm_config import LLM_MODEL as MODEL, llm_client
 
 # Backward-compatible alias. The source of truth is now templates.json,
 # but anything that still imports DOCUMENT_SCHEMAS from here keeps working.
