@@ -927,7 +927,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 async function loadDocumentTypes() {
   const dt = document.getElementById('dt');
   try {
-    const response = await fetch('http://127.0.0.1:8000/document-types');
+    const response = await fetch('/document-types');
     const data = await response.json();
     const types = data.document_types || {};
     dt.innerHTML = '';
@@ -973,7 +973,7 @@ async function runSingle() {
   fd.append('document_type', document.getElementById('dt').value);
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/ocr/fields', { method: 'POST', body: fd });
+    const response = await fetch('/ocr/fields', { method: 'POST', body: fd });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Request failed.');
     setStep(3); await wait(400);
@@ -1001,7 +1001,7 @@ async function runBatch() {
   fd.append('document_type', document.getElementById('dt').value);
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/ocr/fields/batch', { method: 'POST', body: fd });
+    const response = await fetch('/ocr/fields/batch', { method: 'POST', body: fd });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Request failed.');
     setStep(3); await wait(300);
@@ -1029,7 +1029,7 @@ async function runMerge() {
   fd.append('document_type', document.getElementById('dt').value);
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/ocr/fields/merge', { method: 'POST', body: fd });
+    const response = await fetch('/ocr/fields/merge', { method: 'POST', body: fd });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Request failed.');
     setStep(3); await wait(300);
