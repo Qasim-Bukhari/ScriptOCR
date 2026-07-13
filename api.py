@@ -52,6 +52,14 @@ RATE_LIMIT_BASE_DELAY_SECONDS = 3
 ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/jpg", "image/bmp", "image/tiff", "image/pjpeg"]
 ALLOWED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".tiff", ".tif"]
 
+# Upload size backstop. Note this is NOT the main lever on model latency/
+# cost — pixel dimensions are (see MAX_IMAGE_DIMENSION in preprocess_image
+# below). This just rejects obviously-wrong uploads (e.g. someone
+# accidentally attaching a PDF or a huge scan) before they hit the
+# pipeline at all.
+MAX_FILE_SIZE_MB = 8
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
 
 def is_allowed_image(filename: str, content_type: str) -> bool:
     """True if the file looks like a supported image, checked by BOTH
@@ -68,6 +76,19 @@ def is_allowed_image(filename: str, content_type: str) -> bool:
         return True
     ext = os.path.splitext(filename or "")[-1].lower()
     return ext in ALLOWED_IMAGE_EXTENSIONS
+
+
+def validate_upload(filename: str, content_type: str, contents: bytes) -> str | None:
+    """Returns an error message if this upload should be rejected, or None
+    if it's fine. Checks both file type and size in one place so every
+    route (single, batch, merge) validates identically."""
+    if not is_allowed_image(filename, content_type):
+        return f"Invalid file type: {content_type}"
+    if len(contents) > MAX_FILE_SIZE_BYTES:
+        size_mb = len(contents) / (1024 * 1024)
+        return f"File too large: {size_mb:.1f}MB (max {MAX_FILE_SIZE_MB}MB)"
+    return None
+
 
 OCR_PROMPT = """You are an expert OCR system specialized in handwritten and cursive English text.
 
@@ -140,10 +161,28 @@ _export_lock = asyncio.Lock()
 
 
 # ── Image Preprocessing ────────────────────────────────────────────────────────
+# Caps the longest side of an uploaded image before OCR. This is the real
+# lever on vision-model latency/cost — pixel count, not file KB size. Raw
+# phone-camera photos are commonly 3000-4000px+ on the long side; nothing
+# in this pipeline needs more than ~2000px to keep handwritten text
+# legible to the model, so anything larger gets downscaled first. Images
+# already under the cap are left untouched (never upscaled).
+MAX_IMAGE_DIMENSION = 2000
+
+
 def preprocess_image(image_path: str) -> str:
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError("Could not load image.")
+
+    h, w = img.shape[:2]
+    longest_side = max(h, w)
+    if longest_side > MAX_IMAGE_DIMENSION:
+        scale = MAX_IMAGE_DIMENSION / longest_side
+        img = cv2.resize(
+            img, (int(w * scale), int(h * scale)),
+            interpolation=cv2.INTER_AREA  # best quality for downscaling
+        )
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     denoised = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
@@ -442,12 +481,13 @@ def document_types():
 
 @app.post("/ocr", dependencies=[Depends(require_auth)])
 async def ocr(file: UploadFile = File(...)):
-    if not is_allowed_image(file.filename, file.content_type):
-        raise HTTPException(status_code=400, detail=f"Invalid file type: {file.content_type}")
+    contents = await file.read()
+    error = validate_upload(file.filename, file.content_type, contents)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
 
     suffix = os.path.splitext(file.filename)[-1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
         tmp.write(contents)
         tmp_path = tmp.name
 
@@ -477,15 +517,16 @@ async def ocr_fields(
     file: UploadFile = File(...),
     document_type: str = Form(...)
 ):
-    if not is_allowed_image(file.filename, file.content_type):
-        raise HTTPException(status_code=400, detail=f"Invalid file type: {file.content_type}")
-
     try:
         template = get_template(document_type)
     except TemplateNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     contents = await file.read()
+    error = validate_upload(file.filename, file.content_type, contents)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
     result = await process_single_document(contents, file.filename, document_type)
 
     if not result["success"]:
@@ -523,17 +564,14 @@ async def ocr_fields_batch(
 
     tasks = []
     for f in files:
-        if not is_allowed_image(f.filename, f.content_type):
-            async def _invalid(filename=f.filename, content_type=f.content_type):
-                return {
-                    "success": False,
-                    "filename": filename,
-                    "error": f"Invalid file type: {content_type}"
-                }
+        contents = await f.read()
+        error = validate_upload(f.filename, f.content_type, contents)
+        if error:
+            async def _invalid(filename=f.filename, error=error):
+                return {"success": False, "filename": filename, "error": error}
             tasks.append(_invalid())
             continue
 
-        contents = await f.read()
         tasks.append(process_with_limit(contents, f.filename, document_type))
 
     batch_start = time.monotonic()
@@ -600,17 +638,14 @@ async def ocr_fields_merge(
     # results, so page order survives the concurrency.
     tasks = []
     for f in files:
-        if not is_allowed_image(f.filename, f.content_type):
-            async def _invalid(filename=f.filename, content_type=f.content_type):
-                return {
-                    "success": False,
-                    "filename": filename,
-                    "error": f"Invalid file type: {content_type}"
-                }
+        contents = await f.read()
+        error = validate_upload(f.filename, f.content_type, contents)
+        if error:
+            async def _invalid(filename=f.filename, error=error):
+                return {"success": False, "filename": filename, "error": error}
             tasks.append(_invalid())
             continue
 
-        contents = await f.read()
         tasks.append(ocr_only_with_limit(contents, f.filename))
 
     page_results = await asyncio.gather(*tasks)
