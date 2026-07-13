@@ -95,6 +95,19 @@ security = HTTPBasic()
 APP_USERNAME = os.environ.get("APP_USERNAME", "njv")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 
+# Fail loudly at startup if APP_PASSWORD is unset, instead of silently
+# allowing a blank password to authenticate successfully. Without this
+# check, `secrets.compare_digest(credentials.password, "")` would succeed
+# for anyone who submits an empty password field — a real risk if this
+# env var is ever forgotten during a fresh deploy (e.g. a new host).
+if not APP_PASSWORD:
+    raise RuntimeError(
+        "APP_PASSWORD environment variable is not set. Refusing to start "
+        "with authentication effectively disabled. Set APP_PASSWORD in "
+        "your .env file (local) or your host's environment variables "
+        "(deployed) before starting the server."
+    )
+
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
     correct_user = secrets.compare_digest(credentials.username, APP_USERNAME)
     correct_pass = secrets.compare_digest(credentials.password, APP_PASSWORD)
