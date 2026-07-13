@@ -19,7 +19,7 @@ from typing import List
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
@@ -86,6 +86,25 @@ Return your response as a JSON object in this exact format:
 }
 
 Return ONLY the JSON object. No markdown, no backticks, no extra text."""
+
+# ── Authentication ────────────────────────────────────────────────────────────
+import secrets
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+
+security = HTTPBasic()
+APP_USERNAME = os.environ.get("APP_USERNAME", "njv")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_user = secrets.compare_digest(credentials.username, APP_USERNAME)
+    correct_pass = secrets.compare_digest(credentials.password, APP_PASSWORD)
+    if not (correct_user and correct_pass):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Basic"}
+        )
+    return credentials.username
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -376,12 +395,12 @@ async def process_with_limit(contents: bytes, filename: str, document_type: str)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-@app.get("/ui")
+@app.get("/ui", dependencies=[Depends(require_auth)])
 def ui():
     return FileResponse("index.html")
 
 
-@app.get("/")
+@app.get("/", dependencies=[Depends(require_auth)])
 def root():
     return {
         "service": "Handwriting OCR API",
@@ -403,12 +422,12 @@ def health():
     return {"status": "healthy"}
 
 
-@app.get("/document-types")
+@app.get("/document-types", dependencies=[Depends(require_auth)])
 def document_types():
     return {"document_types": list_templates()}
 
 
-@app.post("/ocr")
+@app.post("/ocr", dependencies=[Depends(require_auth)])
 async def ocr(file: UploadFile = File(...)):
     if not is_allowed_image(file.filename, file.content_type):
         raise HTTPException(status_code=400, detail=f"Invalid file type: {file.content_type}")
@@ -440,7 +459,7 @@ async def ocr(file: UploadFile = File(...)):
             os.remove(preprocessed_path)
 
 
-@app.post("/ocr/fields")
+@app.post("/ocr/fields", dependencies=[Depends(require_auth)])
 async def ocr_fields(
     file: UploadFile = File(...),
     document_type: str = Form(...)
@@ -466,7 +485,7 @@ async def ocr_fields(
     })
 
 
-@app.post("/ocr/fields/batch")
+@app.post("/ocr/fields/batch", dependencies=[Depends(require_auth)])
 async def ocr_fields_batch(
     files: List[UploadFile] = File(...),
     document_type: str = Form(...)
@@ -528,7 +547,7 @@ async def ocr_fields_batch(
     })
 
 
-@app.post("/ocr/fields/merge")
+@app.post("/ocr/fields/merge", dependencies=[Depends(require_auth)])
 async def ocr_fields_merge(
     files: List[UploadFile] = File(...),
     document_type: str = Form(...)
